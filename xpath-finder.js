@@ -1,9 +1,4 @@
-/**
- * Salesforce XPath Finder v2
- * Click any element on a Salesforce page, get up to 5 ranked XPath suggestions.
- * XPaths follow Salesforce Lightning patterns (data-label, span/parent::button, etc.)
- * Each XPath is validated: green = unique, red = multiple matches.
- */
+
 (function () {
 if (window.__xf) return;
 window.__xf = true;
@@ -29,22 +24,45 @@ function gen(el) {
   try { txt = (el.textContent || "").trim(); } catch (e) {}
   if (txt.length > 50) txt = "";
 
-  // Shadow DOM host
+  // Lightning custom element (tag has a dash like lightning-button, c-my-component)
+  if (t.indexOf("-") > 0) {
+    var custAttrs = ["data-id", "data-name", "data-label", "data-tracking-type", "aria-label", "title", "name", "class"];
+    custAttrs.forEach(function (a) {
+      var v = el.getAttribute(a);
+      if (!v || v.length > 80) return;
+      if (a === "class") {
+        var cls = v.trim().split(/\s+/)[0];
+        if (cls && cls.length > 3) r.push("//" + t + "[contains(@class," + wq(cls) + ")]");
+      } else {
+        r.push("//" + t + "[@" + a + "=" + wq(v) + "]");
+      }
+    });
+    if (el.id && !/\d{4,}/.test(el.id)) r.push("//" + t + "[@id='" + el.id + "']");
+    // try unique tag
+    try { if (document.querySelectorAll(t).length === 1) r.push("//" + t); } catch (ex) {}
+  }
+
+  // Shadow DOM: if we're inside a shadow root, get host attributes
   try {
     var root = el.getRootNode && el.getRootNode();
     if (root && root !== document && root.host) {
       var h = root.host, ht = h.tagName.toLowerCase();
-      if (h.getAttribute("data-name")) r.push("//" + ht + "[@data-name=" + wq(h.getAttribute("data-name")) + "]");
-      if (h.getAttribute("data-id")) r.push("//" + ht + "[@data-id=" + wq(h.getAttribute("data-id")) + "]");
-      if (h.getAttribute("data-tracking-type")) r.push("//" + ht + "[@data-tracking-type=" + wq(h.getAttribute("data-tracking-type")) + "]");
-      if (h.getAttribute("aria-label")) r.push("//" + ht + "[@aria-label=" + wq(h.getAttribute("aria-label")) + "]");
+      var hostAttrs = ["data-id", "data-name", "data-label", "data-tracking-type", "aria-label", "title"];
+      hostAttrs.forEach(function (a) {
+        var hv = h.getAttribute(a);
+        if (hv) r.push("//" + ht + "[@" + a + "=" + wq(hv) + "]");
+      });
+      if (h.id && !/\d{4,}/.test(h.id)) r.push("//" + ht + "[@id='" + h.id + "']");
     }
   } catch (e) {}
 
+  // If element itself has shadow root, use its own attributes
   if (el.shadowRoot) {
-    if (el.getAttribute("data-name")) r.push("//" + t + "[@data-name=" + wq(el.getAttribute("data-name")) + "]");
-    if (el.getAttribute("data-id")) r.push("//" + t + "[@data-id=" + wq(el.getAttribute("data-id")) + "]");
-    if (el.getAttribute("data-tracking-type")) r.push("//" + t + "[@data-tracking-type=" + wq(el.getAttribute("data-tracking-type")) + "]");
+    var selfAttrs = ["data-id", "data-name", "data-label", "data-tracking-type", "aria-label"];
+    selfAttrs.forEach(function (a) {
+      var sv = el.getAttribute(a);
+      if (sv) r.push("//" + t + "[@" + a + "=" + wq(sv) + "]");
+    });
   }
 
   // Button with span text: //span[text()='Save']/parent::button
@@ -179,20 +197,40 @@ function findLabel(el) {
 
 function findBestTarget(el, e) {
   var deep = el;
+
+  // composedPath() pierces shadow DOM — gives the real deepest element
   try {
-    var fp = document.elementFromPoint(e.clientX, e.clientY);
-    if (fp && fp !== el) { if (el.contains(fp)) deep = fp; else deep = fp; }
+    var path = e.composedPath && e.composedPath();
+    if (path && path.length > 0) {
+      for (var pi = 0; pi < path.length; pi++) {
+        var node = path[pi];
+        if (node.nodeType === 1 && node.tagName) { deep = node; break; }
+      }
+    }
   } catch (ex) {}
+
+  // fallback: elementFromPoint
+  if (deep === el) {
+    try {
+      var fp = document.elementFromPoint(e.clientX, e.clientY);
+      if (fp && fp !== el) deep = fp;
+    } catch (ex) {}
+  }
 
   var t = deep.tagName ? deep.tagName.toLowerCase() : "";
   var isKnown = /^(a|button|input|select|textarea|span|div|li|td|th|label|img|p|h[1-6]|svg|i)$/.test(t);
 
+  // For custom/unknown elements, try to find a standard child
   if (!isKnown) {
     var inner = deep.querySelector("a,button,span,input");
     if (inner) return inner;
-    if (deep.shadowRoot) { var si = deep.shadowRoot.querySelector("a,button,span,input"); if (si) return si; }
+    if (deep.shadowRoot) {
+      var si = deep.shadowRoot.querySelector("a,button,span,input");
+      if (si) return si;
+    }
   }
 
+  // For wrapper elements (div/nav/li/ul), find nearest clickable child
   if ((t === "div" || t === "nav" || t === "li" || t === "ul") && deep.children.length > 0) {
     var links = deep.querySelectorAll("a,button");
     if (links.length === 1) return links[0];
@@ -206,6 +244,12 @@ function findBestTarget(el, e) {
       if (best) return best;
     }
   }
+
+  // For Lightning custom elements with shadow, walk up to find the host and use its attributes
+  if (!isKnown && t.indexOf("-") > 0) {
+    return deep;
+  }
+
   return deep;
 }
 
@@ -288,14 +332,21 @@ function handler(e) {
 function toggle() {
   on = !on;
   var btn = document.getElementById("__xf_toggle");
-  if (on) { document.addEventListener("click", handler, true); btn.textContent = "XPath: ON"; btn.style.background = "#4caf50"; }
-  else { document.removeEventListener("click", handler, true); hide(); btn.textContent = "XPath: OFF"; btn.style.background = "#f44336"; }
+  if (on) { document.addEventListener("click", handler, true); btn.textContent = "XPath: ON (Ctrl+Shift+X)"; btn.style.background = "#4caf50"; }
+  else { document.removeEventListener("click", handler, true); hide(); btn.textContent = "XPath: OFF (Ctrl+Shift+X)"; btn.style.background = "#f44336"; }
 }
 
 var btn = document.createElement("button");
 btn.id = "__xf_toggle";
-btn.textContent = "XPath: OFF";
+btn.textContent = "XPath: OFF (Ctrl+Shift+X)";
 btn.style.cssText = "position:fixed;bottom:12px;right:12px;z-index:999998;padding:8px 16px;font:13px sans-serif;font-weight:bold;color:#fff;background:#f44336;border:none;border-radius:8px;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,0.3);";
 btn.onclick = toggle;
 document.body.appendChild(btn);
+
+document.addEventListener("keydown", function (e) {
+  if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === "X" || e.key === "x")) {
+    e.preventDefault();
+    toggle();
+  }
+});
 })();
