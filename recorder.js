@@ -45,7 +45,61 @@ function findClickParent(el){
   }return el;
 }
 
-function getSfXPath(el){
+function resolveTarget(e){
+  var deep=e.target;
+  try{var path=e.composedPath&&e.composedPath();
+    if(path&&path.length>0){for(var i=0;i<path.length;i++){if(path[i].nodeType===1&&path[i].tagName){deep=path[i];break;}}}
+  }catch(ex){}
+  var t=stag(deep);
+  var isKnown=/^(a|button|input|select|textarea|span|div|li|td|th|label|img|p|h[1-6]|svg|i)$/.test(t);
+  if(!isKnown){
+    var inner=deep.querySelector("a,button,span,input");
+    if(inner)return inner;
+    if(deep.shadowRoot){var si=deep.shadowRoot.querySelector("a,button,span,input");if(si)return si;}
+  }
+  if((t==="div"||t==="nav"||t==="li"||t==="ul")&&deep.children.length>0){
+    var links=deep.querySelectorAll("a,button");
+    if(links.length===1)return links[0];
+    if(links.length>1){var best=null,bd=Infinity;
+      links.forEach(function(lnk){var rect=lnk.getBoundingClientRect();
+        var d=Math.sqrt(Math.pow(e.clientX-(rect.left+rect.width/2),2)+Math.pow(e.clientY-(rect.top+rect.height/2),2));
+        if(d<bd){bd=d;best=lnk;}});
+      if(best)return best;}
+  }
+  return deep;
+}
+
+function countXP(xp){try{return document.evaluate("count("+xp+")",document,null,XPathResult.NUMBER_TYPE,null).numberValue;}catch(e){return 999;}}
+
+function bestXPath(el){
+  var candidates=getAllXPaths(el);
+  for(var i=0;i<candidates.length;i++){if(countXP(candidates[i])===1)return candidates[i];}
+  return candidates.length>0?candidates[0]:getSfXPathBasic(el);
+}
+
+function getAllXPaths(el){
+  if(!el||!el.tagName)return[];
+  var t=stag(el),r=[];
+  var txt="";try{txt=(el.textContent||"").trim();}catch(e){}
+  if(txt.length>50)txt="";
+  if(t.indexOf("-")>0){
+    var ca=["data-id","data-name","data-label","data-tracking-type","aria-label","title"];
+    ca.forEach(function(a){var v=el.getAttribute(a);if(v&&v.length<80)r.push("//"+t+"[@"+a+"="+wq(v)+"]");});
+    if(el.id&&!/\d{4,}/.test(el.id))r.push("//"+t+"[@id='"+el.id+"']");
+    try{if(document.querySelectorAll(t).length===1)r.push("//"+t);}catch(ex){}
+  }
+  try{var root=el.getRootNode&&el.getRootNode();
+    if(root&&root!==document&&root.host){var h=root.host,ht=stag(h);
+      var ha=["data-id","data-name","data-label","data-tracking-type","aria-label","title"];
+      ha.forEach(function(a){var hv=h.getAttribute(a);if(hv)r.push("//"+ht+"[@"+a+"="+wq(hv)+"]");});
+      if(h.id&&!/\d{4,}/.test(h.id))r.push("//"+ht+"[@id='"+h.id+"']");
+    }}catch(e){}
+  r.push(getSfXPathBasic(el));
+  var seen={},out=[];r.forEach(function(x){if(!seen[x]){seen[x]=1;out.push(x);}});
+  return out;
+}
+
+function getSfXPathBasic(el){
   if(!el||!el.ownerDocument)return"";
   var t=stag(el);
   if(t==="button"){
@@ -139,7 +193,7 @@ function addStep(action,rawEl,value){
   if(!rawEl)return;
   var el=(action==="click"||action==="submit"||action==="hover_click")?findClickParent(rawEl):rawEl;
   stepIndex++;
-  var xp=getSfXPath(el),isClk=action==="click"||action==="submit"||action==="hover_click"||action==="key";
+  var xp=bestXPath(el),isClk=action==="click"||action==="submit"||action==="hover_click"||action==="key";
   var desc=isClk?clickDesc(el):fieldLabel(el);
   var oid=makeObjId(action,el,desc);
   steps.push({n:stepIndex,action:action,desc:desc,objectId:oid,xpath:xp,tag:stag(el),inputType:inputType(el),value:value||""});
@@ -159,7 +213,7 @@ function needsHover(el){return!!(el.closest("[role='menu'],[role='menubar'],[rol
 function detectAction(el){if(isSubmit(el))return"submit";if(needsHover(el))return"hover_click";return"click";}
 
 function onClick(e){if(!isRecording||isUI(e.target))return;
-  var el=e.target,t=stag(el);
+  var el=resolveTarget(e),t=stag(el);
   if(t==="input"&&(el.type==="checkbox"||el.type==="radio")){e.preventDefault();addStep("check",el,(!el.checked)?"true":"false");return;}
   flushInput();
   if(t==="option"){var s=el.closest("select");if(s){addStep("select",s,el.textContent.trim());return;}}
@@ -170,7 +224,7 @@ function onClick(e){if(!isRecording||isUI(e.target))return;
 }
 
 function onKey(e){if(!isRecording||isUI(e.target))return;var k=e.key;
-  if(k==="Enter"||k==="Tab"||k==="Escape"){if(k!=="Tab")flushInput();addStep("key",e.target,k.toUpperCase());}}
+  if(k==="Enter"||k==="Tab"||k==="Escape"){if(k!=="Tab")flushInput();addStep("key",resolveTarget(e),k.toUpperCase());}}
 
 function onFocus(e){if(!isRecording||isUI(e.target))return;var el=e.target,t=stag(el);
   if(t==="input"||t==="textarea"||t==="select"||el.getAttribute("contenteditable")==="true"){flushInput();lastFocusedEl=el;lastFocusedValue=el.value||"";}}
