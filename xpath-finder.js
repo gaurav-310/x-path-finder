@@ -737,16 +737,7 @@ function show(el, e) {
     }
 
     var testCmd =
-      "var xp=" + JSON.stringify(item.xp) + ";" +
-      "var els=document.evaluate(xp,document,null," +
-      "XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,null);" +
-      "console.log('Matches:',els.snapshotLength);" +
-      "if(els.snapshotLength>0){" +
-      "var el=els.snapshotItem(0);" +
-      "el.scrollIntoView({block:'center'});" +
-      "el.style.outline='3px solid red';" +
-      "setTimeout(function(){el.click();" +
-      "console.log('Clicked:',el);},500);}";
+      "$x(" + JSON.stringify(item.xp) + ")[0].click()";
 
     code.onclick = makeCopier(item.xp, code);
     cpBtn.onclick = makeCopier(item.xp, cpBtn, true);
