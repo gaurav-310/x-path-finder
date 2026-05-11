@@ -1,5 +1,5 @@
 /**
- * Salesforce XPath Finder v5
+ * Salesforce XPath Finder v6
  * - Blocks dropdown clicks (mousedown + click) so dropdowns don't open
  * - User can manually open a dropdown, then click inside to inspect options
  * - Live hover highlight (like DevTools inspect)
