@@ -632,27 +632,61 @@ function show(el, e) {
       "white-space:nowrap;";
     cpBtn.textContent = "Copy";
 
-    function makeCopier(xpath, elem) {
+    var testBtn = document.createElement("button");
+    testBtn.style.cssText =
+      "cursor:pointer;padding:2px 8px;" +
+      "font-size:10px;background:#1565c0;" +
+      "color:#fff;border:none;border-radius:3px;" +
+      "white-space:nowrap;";
+    testBtn.textContent = "Test";
+    testBtn.title =
+      "Copies console command to verify and click";
+
+    function makeCopier(text, elem, label) {
       return function (ev) {
         ev.stopPropagation();
         ev.preventDefault();
         if (navigator.clipboard)
-          navigator.clipboard.writeText(xpath)
+          navigator.clipboard.writeText(text)
             .then(function () {
+              var orig = elem.textContent;
               elem.style.color = "#4caf50";
-              setTimeout(function () {
-                elem.style.color = "";
-              }, 600);
+              if (label) {
+                elem.textContent = "\u2713";
+                setTimeout(function () {
+                  elem.textContent = orig;
+                  elem.style.color = "";
+                }, 800);
+              } else {
+                setTimeout(function () {
+                  elem.style.color = "";
+                }, 600);
+              }
             });
       };
     }
+
+    var testCmd =
+      "var xp=" + JSON.stringify(item.xp) + ";" +
+      "var els=document.evaluate(xp,document,null," +
+      "XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,null);" +
+      "console.log('Matches:',els.snapshotLength);" +
+      "if(els.snapshotLength>0){" +
+      "var el=els.snapshotItem(0);" +
+      "el.scrollIntoView({block:'center'});" +
+      "el.style.outline='3px solid red';" +
+      "setTimeout(function(){el.click();" +
+      "console.log('Clicked:',el);},500);}";
+
     code.onclick = makeCopier(item.xp, code);
-    cpBtn.onclick = makeCopier(item.xp, cpBtn);
+    cpBtn.onclick = makeCopier(item.xp, cpBtn, true);
+    testBtn.onclick = makeCopier(testCmd, testBtn, true);
 
     row.appendChild(num);
     row.appendChild(code);
     row.appendChild(badge);
     row.appendChild(cpBtn);
+    row.appendChild(testBtn);
     box.appendChild(row);
   });
 
@@ -660,7 +694,8 @@ function show(el, e) {
   hint.style.cssText =
     "margin-top:6px;font-size:10px;color:#777;";
   hint.textContent =
-    "Click XPath to copy | Green=unique | Red=multiple";
+    "Copy=copy xpath | Test=paste in console to verify+click | " +
+    "Green=unique | Red=multiple";
   box.appendChild(hint);
   document.body.appendChild(box);
 }
@@ -696,7 +731,7 @@ function toggle() {
     // Block focus loss so dropdowns/popovers don't close
     document.addEventListener("focusout", focusBlocker, true);
     document.addEventListener("blur", focusBlocker, true);
-    btn.textContent = "XPath: ON (Alt+X)";
+    btn.textContent = "XPath: ON (\u2318\u21E7X or Ctrl+Shift+X)";
     btn.style.background = "#4caf50";
   } else {
     document.removeEventListener("mousedown", blocker, true);
@@ -711,7 +746,7 @@ function toggle() {
     document.removeEventListener("blur", focusBlocker, true);
     hide();
     clearHover();
-    btn.textContent = "XPath: OFF (Alt+X)";
+    btn.textContent = "XPath: OFF (\u2318\u21E7X or Ctrl+Shift+X)";
     btn.style.background = "#f44336";
   }
 }
@@ -720,7 +755,7 @@ function toggle() {
 
 var btn = document.createElement("button");
 btn.id = "__xf_toggle";
-btn.textContent = "XPath: OFF (Alt+X)";
+btn.textContent = "XPath: OFF (\u2318\u21E7X or Ctrl+Shift+X)";
 btn.style.cssText =
   "position:fixed;bottom:12px;right:12px;" +
   "z-index:2147483647;padding:8px 16px;" +
@@ -732,15 +767,16 @@ btn.onclick = toggle;
 document.body.appendChild(btn);
 
 function shortcutHandler(e) {
-  // Accept Cmd+Shift+X (Mac), Ctrl+Shift+X (Win/Linux),
-  // or Alt+X (universal fallback)
-  var modOk = (e.ctrlKey || e.metaKey) && e.shiftKey;
-  var altOk = e.altKey && !e.ctrlKey && !e.metaKey;
-  var keyOk = e.code === "KeyX" ||
-              e.key === "X" || e.key === "x";
-  if ((modOk || altOk) && keyOk) {
+  // Use e.code (layout-independent) - "KeyX" always
+  // means the X key regardless of Mac Option special chars
+  var isX = e.code === "KeyX";
+  if (!isX) return;
+  // Cmd+Shift+X (Mac) or Ctrl+Shift+X (Win/Linux)
+  var hasMod = (e.metaKey || e.ctrlKey) && e.shiftKey;
+  if (hasMod) {
     e.preventDefault();
     e.stopPropagation();
+    e.stopImmediatePropagation();
     toggle();
   }
 }
