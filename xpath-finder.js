@@ -696,7 +696,7 @@ function toggle() {
     // Block focus loss so dropdowns/popovers don't close
     document.addEventListener("focusout", focusBlocker, true);
     document.addEventListener("blur", focusBlocker, true);
-    btn.textContent = "XPath: ON (Ctrl+Shift+X)";
+    btn.textContent = "XPath: ON (Alt+X)";
     btn.style.background = "#4caf50";
   } else {
     document.removeEventListener("mousedown", blocker, true);
@@ -711,7 +711,7 @@ function toggle() {
     document.removeEventListener("blur", focusBlocker, true);
     hide();
     clearHover();
-    btn.textContent = "XPath: OFF (Ctrl+Shift+X)";
+    btn.textContent = "XPath: OFF (Alt+X)";
     btn.style.background = "#f44336";
   }
 }
@@ -720,7 +720,7 @@ function toggle() {
 
 var btn = document.createElement("button");
 btn.id = "__xf_toggle";
-btn.textContent = "XPath: OFF (Ctrl+Shift+X)";
+btn.textContent = "XPath: OFF (Alt+X)";
 btn.style.cssText =
   "position:fixed;bottom:12px;right:12px;" +
   "z-index:2147483647;padding:8px 16px;" +
@@ -731,12 +731,22 @@ btn.style.cssText =
 btn.onclick = toggle;
 document.body.appendChild(btn);
 
-document.addEventListener("keydown", function (e) {
-  if ((e.ctrlKey || e.metaKey) &&
-      e.shiftKey &&
-      (e.key === "X" || e.key === "x")) {
+function shortcutHandler(e) {
+  // Accept Cmd+Shift+X (Mac), Ctrl+Shift+X (Win/Linux),
+  // or Alt+X (universal fallback)
+  var modOk = (e.ctrlKey || e.metaKey) && e.shiftKey;
+  var altOk = e.altKey && !e.ctrlKey && !e.metaKey;
+  var keyOk = e.code === "KeyX" ||
+              e.key === "X" || e.key === "x";
+  if ((modOk || altOk) && keyOk) {
     e.preventDefault();
+    e.stopPropagation();
     toggle();
   }
-});
+}
+
+// Attach in CAPTURE phase to both window and document
+// so Salesforce can't swallow the event first
+window.addEventListener("keydown", shortcutHandler, true);
+document.addEventListener("keydown", shortcutHandler, true);
 })();
