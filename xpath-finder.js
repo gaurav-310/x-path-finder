@@ -282,15 +282,46 @@ function gen(rawEl) {
       "]/ancestor::label//input[@type='checkbox']");
   }
 
-  // Input/textarea wrappers
+  // Input/textarea wrappers + label-based
   if (t === "input" || t === "textarea") {
     var dlw = el.closest("[data-label]");
-    if (dlw) r.push("//*[@data-label=" +
-      wq(dlw.getAttribute("data-label")) + "]//" + t);
+    if (dlw)
+      r.push("//*[@data-label=" +
+        wq(dlw.getAttribute("data-label")) + "]//" + t);
     var alw = el.closest("[aria-label]");
     if (alw && alw !== el)
       r.push("//*[@aria-label=" +
         wq(alw.getAttribute("aria-label")) + "]//" + t);
+
+    // Label-text based (very stable for textareas)
+    var lblTxt = findLabel(el);
+    if (lblTxt && lblTxt.length < 60) {
+      r.push("//label[normalize-space()=" + wq(lblTxt) +
+        "]/following::" + t + "[1]");
+      r.push("//span[text()=" + wq(lblTxt) +
+        "]/ancestor::*[self::div or self::lightning-input or " +
+        "self::lightning-textarea or self::lightning-input-field]" +
+        "[1]//" + t);
+      r.push("//*[contains(@class,'slds-form-element')]" +
+        "[.//*[text()=" + wq(lblTxt) + "]]//" + t);
+    }
+
+    // Form section + field combo
+    var section = el.closest(
+      "section,[role='region'],fieldset," +
+      "lightning-record-form,records-record-layout-section"
+    );
+    if (section) {
+      var sectAttr =
+        section.getAttribute("aria-label") ||
+        section.getAttribute("data-label") ||
+        section.getAttribute("data-target-section-name");
+      if (sectAttr && lblTxt) {
+        r.push("//*[@aria-label=" + wq(sectAttr) +
+          "]//*[contains(@class,'slds-form-element')]" +
+          "[.//*[text()=" + wq(lblTxt) + "]]//" + t);
+      }
+    }
   }
 
   // Common attributes
@@ -406,13 +437,52 @@ function gen(rawEl) {
   }
   if (parts.length) r.push("//" + parts.join("/"));
 
-  // Dedupe, validate, rank
+  // Dedupe + validate
   var seen = {}, valid = [];
   r.forEach(function (xp) {
     if (seen[xp]) return;
     seen[xp] = 1;
     valid.push({ xp: xp, count: countMatches(xp) });
   });
+
+  // Indexed XPath fallback:
+  // For the best non-unique XPath, generate an indexed
+  // version that targets THIS specific element by its
+  // position among matches.
+  var hasUnique = false;
+  valid.forEach(function (v) { if (v.count === 1) hasUnique = true; });
+  if (!hasUnique && valid.length > 0) {
+    // Find the most specific (shortest count > 0) candidate
+    var best = null;
+    valid.forEach(function (v) {
+      if (v.count > 0 && v.count < 20) {
+        if (!best || v.count < best.count) best = v;
+      }
+    });
+    if (best) {
+      try {
+        var res = document.evaluate(
+          best.xp, document, null,
+          XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null
+        );
+        var idx = -1;
+        for (var i = 0; i < res.snapshotLength; i++) {
+          if (res.snapshotItem(i) === el) { idx = i + 1; break; }
+        }
+        if (idx > 0) {
+          var indexedXp = "(" + best.xp + ")[" + idx + "]";
+          if (!seen[indexedXp]) {
+            valid.unshift({
+              xp: indexedXp,
+              count: countMatches(indexedXp)
+            });
+            seen[indexedXp] = 1;
+          }
+        }
+      } catch (e) {}
+    }
+  }
+
   valid.sort(function (a, b) {
     if (a.count === 1 && b.count !== 1) return -1;
     if (b.count === 1 && a.count !== 1) return 1;
