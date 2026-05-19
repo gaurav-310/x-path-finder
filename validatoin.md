@@ -72,59 +72,72 @@ public static class ValidationResult {
     public java.util.List<String> messages = new java.util.ArrayList<>();
 }
 
-/**
- * Detect checked state across native, Lightning, and aria patterns.
- */
+// =================== Small helpers ===================
+
+private String safeAttr(WebElement el, String name) {
+    if (el == null) return "";
+    String v = el.getAttribute(name);
+    return v == null ? "" : v;
+}
+
+private String[] result(boolean ok, String actual) {
+    return new String[] { String.valueOf(ok), actual };
+}
+
+private String[] cmp(String actual, String expected) {
+    return result(actual.equals(expected), actual);
+}
+
+private String[] cmpBool(boolean actual, String expected) {
+    return result(actual == Boolean.parseBoolean(expected),
+                  String.valueOf(actual));
+}
+
+private String[] contains(String actual, String expected) {
+    return result(actual.contains(expected), actual);
+}
+
+private String[] kv(String expected, WebElement el,
+                    boolean useCss, boolean isColor) {
+    int eq = expected.indexOf('=');
+    if (eq <= 0 || el == null)
+        return result(false, "invalid format (use key=value)");
+    String key = expected.substring(0, eq);
+    String exp = expected.substring(eq + 1);
+    String actual = useCss ? el.getCssValue(key) : safeAttr(el, key);
+    if (actual == null) actual = "";
+    boolean ok = isColor
+        ? normalizeColor(actual).equals(normalizeColor(exp))
+        : actual.equals(exp);
+    return result(ok, actual);
+}
+
 private boolean isCheckedUniversal(WebElement el) {
-    try {
-        if (el.isSelected()) return true;
-    } catch (Exception ignored) {}
-    String ariaChecked = el.getAttribute("aria-checked");
-    if ("true".equalsIgnoreCase(ariaChecked)) return true;
-    String ariaPressed = el.getAttribute("aria-pressed");
-    if ("true".equalsIgnoreCase(ariaPressed)) return true;
-    String checked = el.getAttribute("checked");
-    if (checked != null && !checked.equalsIgnoreCase("false"))
-        return true;
-    String cls = el.getAttribute("class");
-    if (cls != null && (cls.contains("is-checked") ||
-        cls.contains("slds-is-selected") ||
-        cls.contains("is-active"))) return true;
-    // Try nested input (Lightning often wraps real input)
+    try { if (el.isSelected()) return true; } catch (Exception ignored) {}
+    if ("true".equalsIgnoreCase(safeAttr(el, "aria-checked"))) return true;
+    if ("true".equalsIgnoreCase(safeAttr(el, "aria-pressed"))) return true;
+    String checked = safeAttr(el, "checked");
+    if (!checked.isEmpty() && !checked.equalsIgnoreCase("false")) return true;
+    String cls = safeAttr(el, "class");
+    if (cls.contains("is-checked") || cls.contains("slds-is-selected") ||
+        cls.contains("is-active")) return true;
     try {
         WebElement nested = el.findElement(By.cssSelector(
-            "input[type='checkbox'], input[type='radio']"));
+            "input[type='checkbox'],input[type='radio']"));
         if (nested != null && nested.isSelected()) return true;
     } catch (Exception ignored) {}
     return false;
 }
 
-/**
- * Normalize color strings so "red" == "rgb(255,0,0)" == "#ff0000".
- * Converts hex and named colors to rgb format for comparison.
- */
 private String normalizeColor(String v) {
     if (v == null) return "";
     v = v.trim().toLowerCase().replaceAll("\\s+", "");
-    // Strip alpha if it's 1 (rgba->rgb)
-    v = v.replaceAll(",1\\)$", ")");
-    v = v.replace("rgba(", "rgb(");
-    // Hex to rgb
-    if (v.matches("#[0-9a-f]{6}")) {
-        int r = Integer.parseInt(v.substring(1, 3), 16);
-        int g = Integer.parseInt(v.substring(3, 5), 16);
-        int b = Integer.parseInt(v.substring(5, 7), 16);
-        v = "rgb(" + r + "," + g + "," + b + ")";
-    } else if (v.matches("#[0-9a-f]{3}")) {
-        int r = Integer.parseInt(
-            v.substring(1, 2) + v.substring(1, 2), 16);
-        int g = Integer.parseInt(
-            v.substring(2, 3) + v.substring(2, 3), 16);
-        int b = Integer.parseInt(
-            v.substring(3, 4) + v.substring(3, 4), 16);
-        v = "rgb(" + r + "," + g + "," + b + ")";
-    }
-    // Named colors -> rgb
+    v = v.replaceAll(",1\\)$", ")").replace("rgba(", "rgb(");
+    if (v.matches("#[0-9a-f]{6}"))
+        v = String.format("rgb(%d,%d,%d)",
+            Integer.parseInt(v.substring(1, 3), 16),
+            Integer.parseInt(v.substring(3, 5), 16),
+            Integer.parseInt(v.substring(5, 7), 16));
     java.util.Map<String, String> named = new java.util.HashMap<>();
     named.put("red", "rgb(255,0,0)");
     named.put("green", "rgb(0,128,0)");
@@ -132,264 +145,86 @@ private String normalizeColor(String v) {
     named.put("white", "rgb(255,255,255)");
     named.put("black", "rgb(0,0,0)");
     named.put("yellow", "rgb(255,255,0)");
-    named.put("orange", "rgb(255,165,0)");
     named.put("gray", "rgb(128,128,128)");
-    named.put("grey", "rgb(128,128,128)");
-    if (named.containsKey(v)) v = named.get(v);
-    return v;
+    return named.getOrDefault(v, v);
 }
 
-/**
- * Validate any number of properties on a single element/locator.
- * Collects ALL results, doesn't fail-fast.
- *
- * @param field        objectId from your XML
- * @param screenName   screen ID from your XML
- * @param validations  Map of check_type -> expected_value
- */
+// =================== Main check dispatcher ===================
+
+private String[] check(String type, String expected,
+                       WebElement el,
+                       java.util.List<WebElement> elements) {
+    expected = expected == null ? "" : expected.trim();
+    String txt = el == null ? "" : el.getText().trim();
+
+    switch (type) {
+        case "exists":         return cmp(String.valueOf(!elements.isEmpty()), expected);
+        case "not_exists":     return cmp(String.valueOf(elements.isEmpty()), expected);
+        case "count":          return cmp(String.valueOf(elements.size()), expected);
+        case "visible":        return el == null ? result(false, "no element")
+                                                 : cmpBool(el.isDisplayed(), expected);
+        case "enabled":        return el == null ? result(false, "no element")
+                                                 : cmpBool(el.isEnabled(), expected);
+        case "selected":       return el == null ? result(false, "no element")
+                                                 : cmpBool(el.isSelected(), expected);
+        case "checked":        return el == null ? result(false, "no element")
+                                                 : cmpBool(isCheckedUniversal(el), expected);
+        case "text":           return cmp(txt, expected);
+        case "text_contains":  return contains(txt, expected);
+        case "text_not_empty": return cmpBool(!txt.isEmpty(), expected);
+        case "text_empty":     return cmpBool(txt.isEmpty(), expected);
+        case "value":          return cmp(safeAttr(el, "value"), expected);
+        case "value_not_empty":return cmpBool(!safeAttr(el, "value").isEmpty(), expected);
+        case "placeholder":    return cmp(safeAttr(el, "placeholder"), expected);
+        case "class_contains": return contains(safeAttr(el, "class"), expected);
+        case "style_contains": return contains(safeAttr(el, "style"), expected);
+        case "attribute":      return kv(expected, el, false, false);
+        case "aria":           return kv(expected, el, false, false);
+        case "css":            return kv(expected, el, true,  true);
+        case "css_contains":   return kv(expected, el, true,  false);
+        case "url_contains":   return contains(
+            DriverManagerThreadSafe.getDriver().getCurrentUrl(), expected);
+        default:               return result(false, "unknown check type");
+    }
+}
+
+// =================== Public entry point ===================
+
 public ValidationResult validateElementOnScreen(
         String field, String screenName,
         java.util.Map<String, String> validations) {
 
-    ValidationResult result = new ValidationResult();
-    String[] objectPropertyArray = this.genGetLocator(field, screenName);
-    String locatorValue = objectPropertyArray[1];
+    ValidationResult res = new ValidationResult();
+    String locator = this.genGetLocator(field, screenName)[1];
 
-    java.util.List<WebElement> elements = new java.util.ArrayList<>();
+    java.util.List<WebElement> elements;
     try {
         elements = DriverManagerThreadSafe.getDriver()
-                .findElements(By.xpath(locatorValue));
+                   .findElements(By.xpath(locator));
     } catch (Exception e) {
-        logger.info("findElements threw: " + e.getMessage());
+        elements = new java.util.ArrayList<>();
     }
-
     WebElement first = elements.isEmpty() ? null : elements.get(0);
 
     for (java.util.Map.Entry<String, String> v : validations.entrySet()) {
         String type = v.getKey().trim().toLowerCase();
-        String expected = v.getValue() == null ? "" : v.getValue().trim();
-        boolean ok = false;
-        String actual = "";
-        String label = field + "." + type;
-
+        String[] r;
         try {
-            switch (type) {
-                case "exists":
-                    actual = String.valueOf(!elements.isEmpty());
-                    ok = actual.equalsIgnoreCase(expected);
-                    break;
-
-                case "not_exists":
-                    actual = String.valueOf(elements.isEmpty());
-                    ok = actual.equalsIgnoreCase(expected);
-                    break;
-
-                case "count":
-                    actual = String.valueOf(elements.size());
-                    ok = actual.equals(expected);
-                    break;
-
-                case "visible":
-                    if (first == null) {
-                        actual = "no element";
-                        ok = false;
-                    } else {
-                        boolean disp = first.isDisplayed();
-                        actual = String.valueOf(disp);
-                        ok = (disp == Boolean.parseBoolean(expected));
-                    }
-                    break;
-
-                case "enabled":
-                    if (first == null) {
-                        actual = "no element";
-                        ok = false;
-                    } else {
-                        boolean en = first.isEnabled();
-                        actual = String.valueOf(en);
-                        ok = (en == Boolean.parseBoolean(expected));
-                    }
-                    break;
-
-                case "selected":
-                    if (first == null) {
-                        actual = "no element";
-                        ok = false;
-                    } else {
-                        boolean sel = first.isSelected();
-                        actual = String.valueOf(sel);
-                        ok = (sel == Boolean.parseBoolean(expected));
-                    }
-                    break;
-
-                case "text":
-                    actual = first == null ? "no element"
-                           : first.getText().trim();
-                    ok = actual.equals(expected);
-                    break;
-
-                case "text_contains":
-                    actual = first == null ? "no element"
-                           : first.getText().trim();
-                    ok = actual.contains(expected);
-                    break;
-
-                case "value":
-                    actual = first == null ? "no element"
-                           : (first.getAttribute("value") == null
-                                ? "" : first.getAttribute("value"));
-                    ok = actual.equals(expected);
-                    break;
-
-                case "placeholder":
-                    actual = first == null ? "no element"
-                           : (first.getAttribute("placeholder") == null
-                                ? "" : first.getAttribute("placeholder"));
-                    ok = actual.equals(expected);
-                    break;
-
-                case "attribute":
-                    // expected format: "attr=value"
-                    int eq = expected.indexOf('=');
-                    if (eq > 0 && first != null) {
-                        String attrName = expected.substring(0, eq);
-                        String attrExpected = expected.substring(eq + 1);
-                        actual = first.getAttribute(attrName) == null
-                               ? "" : first.getAttribute(attrName);
-                        ok = actual.equals(attrExpected);
-                    } else {
-                        actual = "invalid format (use attr=value)";
-                        ok = false;
-                    }
-                    break;
-
-                case "class_contains":
-                    actual = first == null ? "no element"
-                           : (first.getAttribute("class") == null
-                                ? "" : first.getAttribute("class"));
-                    ok = actual.contains(expected);
-                    break;
-
-                case "url_contains":
-                    actual = DriverManagerThreadSafe.getDriver()
-                             .getCurrentUrl();
-                    ok = actual.contains(expected);
-                    break;
-
-                case "checked":
-                    if (first == null) {
-                        actual = "no element";
-                        ok = false;
-                    } else {
-                        boolean checked = isCheckedUniversal(first);
-                        actual = String.valueOf(checked);
-                        ok = (checked == Boolean.parseBoolean(expected));
-                    }
-                    break;
-
-                case "aria":
-                    // format: aria-name=value
-                    int aEq = expected.indexOf('=');
-                    if (aEq > 0 && first != null) {
-                        String an = expected.substring(0, aEq);
-                        String av = expected.substring(aEq + 1);
-                        actual = first.getAttribute(an) == null
-                               ? "" : first.getAttribute(an);
-                        ok = actual.equals(av);
-                    } else {
-                        actual = "invalid format (use aria-name=value)";
-                        ok = false;
-                    }
-                    break;
-
-                case "css":
-                    // format: property=value (exact)
-                    int cEq = expected.indexOf('=');
-                    if (cEq > 0 && first != null) {
-                        String cp = expected.substring(0, cEq);
-                        String cv = expected.substring(cEq + 1);
-                        actual = first.getCssValue(cp);
-                        ok = normalizeColor(actual)
-                             .equals(normalizeColor(cv));
-                    } else {
-                        actual = "invalid format (use prop=value)";
-                        ok = false;
-                    }
-                    break;
-
-                case "css_contains":
-                    // format: property=substring
-                    int ccEq = expected.indexOf('=');
-                    if (ccEq > 0 && first != null) {
-                        String cp2 = expected.substring(0, ccEq);
-                        String cv2 = expected.substring(ccEq + 1);
-                        actual = first.getCssValue(cp2);
-                        ok = actual.contains(cv2);
-                    } else {
-                        actual = "invalid format";
-                        ok = false;
-                    }
-                    break;
-
-                case "style_contains":
-                    actual = first == null ? "no element"
-                           : (first.getAttribute("style") == null
-                                ? "" : first.getAttribute("style"));
-                    ok = actual.contains(expected);
-                    break;
-
-                case "text_not_empty":
-                    actual = first == null ? "no element"
-                           : first.getText().trim();
-                    boolean hasTxt = !actual.isEmpty();
-                    ok = (hasTxt == Boolean.parseBoolean(expected));
-                    break;
-
-                case "text_empty":
-                    actual = first == null ? "no element"
-                           : first.getText().trim();
-                    boolean isEmpty = actual.isEmpty();
-                    ok = (isEmpty == Boolean.parseBoolean(expected));
-                    break;
-
-                case "value_not_empty":
-                    if (first == null) {
-                        actual = "no element";
-                        ok = false;
-                    } else {
-                        String val = first.getAttribute("value");
-                        actual = val == null ? "" : val.trim();
-                        boolean hasVal = !actual.isEmpty();
-                        ok = (hasVal == Boolean.parseBoolean(expected));
-                    }
-                    break;
-
-                default:
-                    actual = "unknown check type";
-                    ok = false;
-            }
+            r = check(type, v.getValue(), first, elements);
         } catch (Exception e) {
-            actual = "exception: " + e.getMessage();
-            ok = false;
+            r = new String[] { "false", "exception: " + e.getMessage() };
         }
-
-        String msg = (ok ? "[PASS] " : "[FAIL] ")
-                + label + " | expected=" + expected
-                + " | actual=" + actual;
-
-        result.messages.add(msg);
+        boolean ok = "true".equals(r[0]);
+        String msg = (ok ? "[PASS] " : "[FAIL] ") + field + "." + type +
+                     " | expected=" + v.getValue() + " | actual=" + r[1];
+        res.messages.add(msg);
         logger.info(msg);
         htmlReporterWebClassInstance.reportStep(
-            "Validate " + label,
-            msg,
-            ok ? "Pass" : "Fail"
-        );
-
-        if (ok) result.passedCount++;
-        else { result.failedCount++; result.passed = false; }
+            "Validate " + field + "." + type, msg, ok ? "Pass" : "Fail");
+        if (ok) res.passedCount++;
+        else { res.failedCount++; res.passed = false; }
     }
-
-    return result;
+    return res;
 }
 ```
 
