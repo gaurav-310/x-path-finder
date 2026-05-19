@@ -49,6 +49,14 @@ One step, all checks run, all results reported, fails only at the end.
 | `attribute` | Attribute equals (format `attr=value`) | `data-label=Account Name` |
 | `class_contains` | CSS class contains substring | `slds-input` |
 | `url_contains` | Current page URL contains | `/lightning/o/Account/` |
+| `checked` | Universal checkbox/radio state (native + aria + Lightning) | `true` |
+| `aria` | aria-* attribute value (format `aria-attr=value`) | `aria-checked=true` |
+| `css` | CSS property exact value | `color=rgba(0, 0, 0, 1)` |
+| `css_contains` | CSS property contains substring | `color=255` |
+| `style_contains` | inline `style` attribute contains | `color:red` |
+| `text_not_empty` | Element has any visible text | `true` |
+| `value_not_empty` | Input has any value | `true` |
+| `text_empty` | Element text is empty | `true` |
 
 ---
 
@@ -62,6 +70,73 @@ public static class ValidationResult {
     public int passedCount = 0;
     public int failedCount = 0;
     public java.util.List<String> messages = new java.util.ArrayList<>();
+}
+
+/**
+ * Detect checked state across native, Lightning, and aria patterns.
+ */
+private boolean isCheckedUniversal(WebElement el) {
+    try {
+        if (el.isSelected()) return true;
+    } catch (Exception ignored) {}
+    String ariaChecked = el.getAttribute("aria-checked");
+    if ("true".equalsIgnoreCase(ariaChecked)) return true;
+    String ariaPressed = el.getAttribute("aria-pressed");
+    if ("true".equalsIgnoreCase(ariaPressed)) return true;
+    String checked = el.getAttribute("checked");
+    if (checked != null && !checked.equalsIgnoreCase("false"))
+        return true;
+    String cls = el.getAttribute("class");
+    if (cls != null && (cls.contains("is-checked") ||
+        cls.contains("slds-is-selected") ||
+        cls.contains("is-active"))) return true;
+    // Try nested input (Lightning often wraps real input)
+    try {
+        WebElement nested = el.findElement(By.cssSelector(
+            "input[type='checkbox'], input[type='radio']"));
+        if (nested != null && nested.isSelected()) return true;
+    } catch (Exception ignored) {}
+    return false;
+}
+
+/**
+ * Normalize color strings so "red" == "rgb(255,0,0)" == "#ff0000".
+ * Converts hex and named colors to rgb format for comparison.
+ */
+private String normalizeColor(String v) {
+    if (v == null) return "";
+    v = v.trim().toLowerCase().replaceAll("\\s+", "");
+    // Strip alpha if it's 1 (rgba->rgb)
+    v = v.replaceAll(",1\\)$", ")");
+    v = v.replace("rgba(", "rgb(");
+    // Hex to rgb
+    if (v.matches("#[0-9a-f]{6}")) {
+        int r = Integer.parseInt(v.substring(1, 3), 16);
+        int g = Integer.parseInt(v.substring(3, 5), 16);
+        int b = Integer.parseInt(v.substring(5, 7), 16);
+        v = "rgb(" + r + "," + g + "," + b + ")";
+    } else if (v.matches("#[0-9a-f]{3}")) {
+        int r = Integer.parseInt(
+            v.substring(1, 2) + v.substring(1, 2), 16);
+        int g = Integer.parseInt(
+            v.substring(2, 3) + v.substring(2, 3), 16);
+        int b = Integer.parseInt(
+            v.substring(3, 4) + v.substring(3, 4), 16);
+        v = "rgb(" + r + "," + g + "," + b + ")";
+    }
+    // Named colors -> rgb
+    java.util.Map<String, String> named = new java.util.HashMap<>();
+    named.put("red", "rgb(255,0,0)");
+    named.put("green", "rgb(0,128,0)");
+    named.put("blue", "rgb(0,0,255)");
+    named.put("white", "rgb(255,255,255)");
+    named.put("black", "rgb(0,0,0)");
+    named.put("yellow", "rgb(255,255,0)");
+    named.put("orange", "rgb(255,165,0)");
+    named.put("gray", "rgb(128,128,128)");
+    named.put("grey", "rgb(128,128,128)");
+    if (named.containsKey(v)) v = named.get(v);
+    return v;
 }
 
 /**
@@ -100,15 +175,13 @@ public ValidationResult validateElementOnScreen(
         try {
             switch (type) {
                 case "exists":
-                    ok = !elements.isEmpty() ==
-                         Boolean.parseBoolean(expected);
                     actual = String.valueOf(!elements.isEmpty());
+                    ok = actual.equalsIgnoreCase(expected);
                     break;
 
                 case "not_exists":
-                    ok = elements.isEmpty() ==
-                         Boolean.parseBoolean(expected);
                     actual = String.valueOf(elements.isEmpty());
+                    ok = actual.equalsIgnoreCase(expected);
                     break;
 
                 case "count":
@@ -117,24 +190,36 @@ public ValidationResult validateElementOnScreen(
                     break;
 
                 case "visible":
-                    ok = first != null && first.isDisplayed() ==
-                         Boolean.parseBoolean(expected);
-                    actual = first == null ? "no element"
-                           : String.valueOf(first.isDisplayed());
+                    if (first == null) {
+                        actual = "no element";
+                        ok = false;
+                    } else {
+                        boolean disp = first.isDisplayed();
+                        actual = String.valueOf(disp);
+                        ok = (disp == Boolean.parseBoolean(expected));
+                    }
                     break;
 
                 case "enabled":
-                    ok = first != null && first.isEnabled() ==
-                         Boolean.parseBoolean(expected);
-                    actual = first == null ? "no element"
-                           : String.valueOf(first.isEnabled());
+                    if (first == null) {
+                        actual = "no element";
+                        ok = false;
+                    } else {
+                        boolean en = first.isEnabled();
+                        actual = String.valueOf(en);
+                        ok = (en == Boolean.parseBoolean(expected));
+                    }
                     break;
 
                 case "selected":
-                    ok = first != null && first.isSelected() ==
-                         Boolean.parseBoolean(expected);
-                    actual = first == null ? "no element"
-                           : String.valueOf(first.isSelected());
+                    if (first == null) {
+                        actual = "no element";
+                        ok = false;
+                    } else {
+                        boolean sel = first.isSelected();
+                        actual = String.valueOf(sel);
+                        ok = (sel == Boolean.parseBoolean(expected));
+                    }
                     break;
 
                 case "text":
@@ -189,6 +274,94 @@ public ValidationResult validateElementOnScreen(
                     actual = DriverManagerThreadSafe.getDriver()
                              .getCurrentUrl();
                     ok = actual.contains(expected);
+                    break;
+
+                case "checked":
+                    if (first == null) {
+                        actual = "no element";
+                        ok = false;
+                    } else {
+                        boolean checked = isCheckedUniversal(first);
+                        actual = String.valueOf(checked);
+                        ok = (checked == Boolean.parseBoolean(expected));
+                    }
+                    break;
+
+                case "aria":
+                    // format: aria-name=value
+                    int aEq = expected.indexOf('=');
+                    if (aEq > 0 && first != null) {
+                        String an = expected.substring(0, aEq);
+                        String av = expected.substring(aEq + 1);
+                        actual = first.getAttribute(an) == null
+                               ? "" : first.getAttribute(an);
+                        ok = actual.equals(av);
+                    } else {
+                        actual = "invalid format (use aria-name=value)";
+                        ok = false;
+                    }
+                    break;
+
+                case "css":
+                    // format: property=value (exact)
+                    int cEq = expected.indexOf('=');
+                    if (cEq > 0 && first != null) {
+                        String cp = expected.substring(0, cEq);
+                        String cv = expected.substring(cEq + 1);
+                        actual = first.getCssValue(cp);
+                        ok = normalizeColor(actual)
+                             .equals(normalizeColor(cv));
+                    } else {
+                        actual = "invalid format (use prop=value)";
+                        ok = false;
+                    }
+                    break;
+
+                case "css_contains":
+                    // format: property=substring
+                    int ccEq = expected.indexOf('=');
+                    if (ccEq > 0 && first != null) {
+                        String cp2 = expected.substring(0, ccEq);
+                        String cv2 = expected.substring(ccEq + 1);
+                        actual = first.getCssValue(cp2);
+                        ok = actual.contains(cv2);
+                    } else {
+                        actual = "invalid format";
+                        ok = false;
+                    }
+                    break;
+
+                case "style_contains":
+                    actual = first == null ? "no element"
+                           : (first.getAttribute("style") == null
+                                ? "" : first.getAttribute("style"));
+                    ok = actual.contains(expected);
+                    break;
+
+                case "text_not_empty":
+                    actual = first == null ? "no element"
+                           : first.getText().trim();
+                    boolean hasTxt = !actual.isEmpty();
+                    ok = (hasTxt == Boolean.parseBoolean(expected));
+                    break;
+
+                case "text_empty":
+                    actual = first == null ? "no element"
+                           : first.getText().trim();
+                    boolean isEmpty = actual.isEmpty();
+                    ok = (isEmpty == Boolean.parseBoolean(expected));
+                    break;
+
+                case "value_not_empty":
+                    if (first == null) {
+                        actual = "no element";
+                        ok = false;
+                    } else {
+                        String val = first.getAttribute("value");
+                        actual = val == null ? "" : val.trim();
+                        boolean hasVal = !actual.isEmpty();
+                        ok = (hasVal == Boolean.parseBoolean(expected));
+                    }
                     break;
 
                 default:
@@ -404,4 +577,42 @@ Then I verify "btn_Save" on "EditPage" screen has:
 ```gherkin
 Then I verify "error_Banner" on "EditPage" screen has:
   | not_exists | true                          |
+```
+
+### Verify checkbox state (works for native + Lightning + aria)
+```gherkin
+Then I verify "chk_SendEmail" on "EditPage" screen has:
+  | checked    | true                          |
+  | visible    | true                          |
+
+# Single shortcut form
+Then I verify "chk_Active" on "EditPage" screen "checked" is "false"
+```
+
+### Verify field color (validation error styling)
+```gherkin
+Then I verify "input_Email" on "EditPage" screen has:
+  | css        | border-color=red              |
+  | css        | color=rgb(194, 57, 52)        |
+
+# Using contains (partial match for color components)
+Then I verify "input_Email" on "EditPage" screen "css_contains" is "color=255"
+
+# Using inline style
+Then I verify "lbl_Error" on "EditPage" screen "style_contains" is "color:red"
+```
+
+### Verify aria attribute (accessibility states)
+```gherkin
+Then I verify "btn_Toggle" on "SettingsPage" screen has:
+  | aria       | aria-pressed=true             |
+  | aria       | aria-expanded=false           |
+  | aria       | aria-disabled=false           |
+```
+
+### Verify highlighted/active state via class
+```gherkin
+Then I verify "tab_Details" on "RecordPage" screen has:
+  | class_contains | slds-is-active            |
+  | aria           | aria-selected=true        |
 ```
