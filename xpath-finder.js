@@ -1,5 +1,5 @@
 /**
- * Salesforce XPath Finder v6
+ * Salesforce XPath Finder v7
  * - Blocks dropdown clicks (mousedown + click) so dropdowns don't open
  * - User can manually open a dropdown, then click inside to inspect options
  * - Live hover highlight (like DevTools inspect)
@@ -321,6 +321,50 @@ function gen(rawEl) {
           "]//*[contains(@class,'slds-form-element')]" +
           "[.//*[text()=" + wq(lblTxt) + "]]//" + t);
       }
+    }
+  }
+
+  // --- DROPDOWN TRIGGER (Lightning combobox) ---
+  // Button with role=combobox or inside lightning-combobox
+  var role = el.getAttribute && el.getAttribute("role");
+  var inCombobox = el.closest && el.closest(
+    "lightning-combobox,lightning-grouped-combobox," +
+    "lightning-base-combobox,[role='combobox']"
+  );
+  if (inCombobox && (t === "button" || t === "input" ||
+      role === "combobox")) {
+    var cbLabel = findLabel(el);
+    if (cbLabel && cbLabel.length < 60) {
+      r.push("//*[@data-label=" + wq(cbLabel) +
+        "]//button[contains(@class,'slds-combobox__input')]");
+      r.push("//label[normalize-space()=" + wq(cbLabel) +
+        "]/following::button[1]");
+      r.push("//label[normalize-space()=" + wq(cbLabel) +
+        "]/following::*[@role='combobox'][1]");
+      r.push("//span[text()=" + wq(cbLabel) +
+        "]/ancestor::lightning-combobox[1]//button");
+      r.push("//*[contains(@class,'slds-form-element')]" +
+        "[.//*[text()=" + wq(cbLabel) + "]]//button");
+    }
+  }
+
+  // --- DROPDOWN OPTION (li/div with role=option) ---
+  if (role === "option" || (t === "li" && el.closest("[role='listbox']")) ||
+      el.closest("lightning-base-combobox-item")) {
+    var optTxt = ownTxt || txt;
+    if (!optTxt) {
+      var optSpan = el.querySelector("span");
+      if (optSpan) optTxt = optSpan.textContent.trim();
+    }
+    if (optTxt && optTxt.length < 60) {
+      r.push("//lightning-base-combobox-item" +
+        "[.//span[text()=" + wq(optTxt) + "]]");
+      r.push("//*[@role='option']" +
+        "[.//*[text()=" + wq(optTxt) + "]]");
+      r.push("//*[@role='option']" +
+        "[normalize-space()=" + wq(optTxt) + "]");
+      r.push("//div[@role='listbox']" +
+        "//span[text()=" + wq(optTxt) + "]");
     }
   }
 
@@ -751,11 +795,135 @@ function show(el, e) {
     box.appendChild(row);
   });
 
+  // ========== DROPDOWN TEMPLATES (with ## placeholder) ==========
+  var ddRole = el.getAttribute && el.getAttribute("role");
+  var isTrigger =
+    (ddRole === "combobox") ||
+    (el.closest && el.closest(
+      "lightning-combobox,lightning-grouped-combobox," +
+      "lightning-base-combobox,[role='combobox']"
+    ));
+  var isOption =
+    (ddRole === "option") ||
+    (el.closest && el.closest(
+      "[role='option'],lightning-base-combobox-item," +
+      "[role='listbox'] li"
+    ));
+
+  if (isTrigger || isOption) {
+    var ddTitle = document.createElement("div");
+    ddTitle.style.cssText =
+      "margin-top:10px;padding-top:8px;" +
+      "border-top:1px solid #444;" +
+      "font-weight:bold;color:#ffb74d;";
+    ddTitle.textContent = "Dropdown Templates (## placeholder)";
+    box.appendChild(ddTitle);
+
+    var templates = [];
+
+    // COMBINED: single XPath with TWO ## placeholders
+    // 1st ## = dropdown label, 2nd ## = option text
+    templates.push({
+      label: "ONE XPath (label + option, 2x ##)",
+      xp: "//label[normalize-space()='##']/following::lightning-base-combobox-item[.//span[text()='##']][1]"
+    });
+    templates.push({
+      label: "ONE XPath (data-label + option, 2x ##)",
+      xp: "//*[@data-label='##']/following::*[@role='option'][normalize-space()='##'][1]"
+    });
+    templates.push({
+      label: "ONE XPath (span label + option, 2x ##)",
+      xp: "//span[text()='##']/ancestor::lightning-combobox[1]/following::lightning-base-combobox-item[.//span[text()='##']][1]"
+    });
+
+    if (isTrigger) {
+      templates.push({
+        label: "Open dropdown by label (single ##)",
+        xp: "//*[@data-label='##']//button[contains(@class,'slds-combobox__input')]"
+      });
+      templates.push({
+        label: "Open dropdown (label text, single ##)",
+        xp: "//label[normalize-space()='##']/following::button[1]"
+      });
+    }
+    if (isOption) {
+      templates.push({
+        label: "Pick option by text (single ##)",
+        xp: "//lightning-base-combobox-item[.//span[text()='##']]"
+      });
+      templates.push({
+        label: "Pick role=option by text (single ##)",
+        xp: "//*[@role='option'][normalize-space()='##']"
+      });
+    }
+
+    templates.forEach(function (tpl) {
+      var trow = document.createElement("div");
+      trow.style.cssText =
+        "margin:6px 0;display:flex;flex-direction:column;gap:2px;";
+
+      var lbl = document.createElement("span");
+      lbl.style.cssText = "color:#aaa;font-size:10px;";
+      lbl.textContent = tpl.label + ":";
+
+      var row2 = document.createElement("div");
+      row2.style.cssText =
+        "display:flex;align-items:start;gap:6px;";
+
+      var tcode = document.createElement("code");
+      tcode.style.cssText =
+        "flex:1;word-break:break-all;cursor:pointer;color:#ffd54f;";
+      tcode.textContent = tpl.xp;
+
+      var tcp = document.createElement("button");
+      tcp.style.cssText =
+        "cursor:pointer;padding:2px 8px;font-size:10px;" +
+        "background:#ef6c00;color:#fff;border:none;" +
+        "border-radius:3px;white-space:nowrap;";
+      tcp.textContent = "Copy";
+
+      var copyTpl = function (xp, btn) {
+        return function (ev) {
+          ev.stopPropagation();
+          ev.preventDefault();
+          if (navigator.clipboard)
+            navigator.clipboard.writeText(xp)
+              .then(function () {
+                var orig = btn.textContent;
+                btn.textContent = "\u2713";
+                btn.style.background = "#2e7d32";
+                setTimeout(function () {
+                  btn.textContent = orig;
+                  btn.style.background = "#ef6c00";
+                }, 800);
+              });
+        };
+      };
+
+      tcode.onclick = copyTpl(tpl.xp, tcode);
+      tcp.onclick = copyTpl(tpl.xp, tcp);
+
+      trow.appendChild(lbl);
+      row2.appendChild(tcode);
+      row2.appendChild(tcp);
+      trow.appendChild(row2);
+      box.appendChild(trow);
+    });
+
+    var ddHint = document.createElement("div");
+    ddHint.style.cssText =
+      "margin-top:4px;font-size:10px;color:#aaa;";
+    ddHint.textContent =
+      "2x ## = 1st: dropdown label, 2nd: option text | " +
+      "1x ## = just label or just option";
+    box.appendChild(ddHint);
+  }
+
   var hint = document.createElement("div");
   hint.style.cssText =
-    "margin-top:6px;font-size:10px;color:#777;";
+    "margin-top:8px;font-size:10px;color:#777;";
   hint.textContent =
-    "Copy=copy xpath | Test=paste in console to verify+click | " +
+    "Copy=copy xpath | Test=paste in console to verify | " +
     "Green=unique | Red=multiple";
   box.appendChild(hint);
   document.body.appendChild(box);
