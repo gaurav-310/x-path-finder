@@ -1,5 +1,5 @@
 /**
- * Salesforce XPath Finder v7
+ * Salesforce XPath Finder v8
  * - Blocks dropdown clicks (mousedown + click) so dropdowns don't open
  * - User can manually open a dropdown, then click inside to inspect options
  * - Live hover highlight (like DevTools inspect)
@@ -16,6 +16,25 @@ var hoverOutline = "";
 var hoverBg = "";
 
 var SVG_TAGS = /^(svg|path|use|circle|line|rect|polygon|g|img|i)$/;
+
+// Detect dynamic/auto-generated IDs (Salesforce LWC, Aura, Angular, Ember, etc.)
+// These IDs change across page loads or module updates and should be avoided.
+function isFlakyId(id) {
+  if (!id) return true;
+  if (id.length < 2) return true;
+  // Multiple consecutive digits anywhere
+  if (/\d{3,}/.test(id)) return true;
+  // Common dynamic ID prefixes
+  if (/^(lwc-|ember|ng-|aura:|sfdc:|cke_|tmp_|x-|window_|input-|combobox-|button-|panel-|modal-|listbox-|menu-|datepicker-)/i.test(id))
+    return true;
+  // Colons or random-looking patterns (e.g., "123:456:abc")
+  if (/:/.test(id)) return true;
+  // Mixed alphanumeric with multiple separators (e.g., "01-2a-3b")
+  if (/[-_]\d/.test(id) && id.replace(/[^\d]/g, "").length >= 2) return true;
+  // Single short letter prefix + numbers (e.g., "j_id12", "j2_id")
+  if (/^j_?id/i.test(id)) return true;
+  return false;
+}
 
 function wq(s) {
   if (!s) return "''";
@@ -145,7 +164,7 @@ function gen(rawEl) {
         }
       }
     }
-    if (el.id && !/\d{4,}/.test(el.id))
+    if (el.id && !isFlakyId(el.id))
       r.push("//" + t + "[@id='" + el.id + "']");
     try {
       if (document.querySelectorAll(t).length === 1)
@@ -169,7 +188,7 @@ function gen(rawEl) {
         if (hv)
           r.push("//" + ht + "[@" + a + "=" + wq(hv) + "]");
       });
-      if (h.id && !/\d{4,}/.test(h.id))
+      if (h.id && !isFlakyId(h.id))
         r.push("//" + ht + "[@id='" + h.id + "']");
     }
   } catch (e) {}
@@ -222,11 +241,23 @@ function gen(rawEl) {
     if (aTitle)
       r.push("//a[@title=" + wq(aTitle) + "]");
     var href = el.getAttribute("href");
-    if (href && href !== "#" && href !== "javascript:void(0)") {
+    // Skip flaky hrefs:
+    // - javascript:* (always flaky)
+    // - "#" anchors
+    // - URLs with Salesforce record IDs (15/18 char ID after /r/Object/)
+    // - URLs with raw IDs that look auto-generated
+    var hrefFlaky =
+      !href || href === "#" ||
+      /^javascript:/i.test(href.trim()) ||
+      /\/[a-zA-Z0-9]{15,18}(\/|$)/.test(href) ||
+      /\d{6,}/.test(href);
+    if (!hrefFlaky) {
       if (href.length < 60)
         r.push("//a[@href=" + wq(href) + "]");
-      var hp = href.split("/").filter(function (p) {
-        return p && p.length > 2;
+      // Use only static-looking parts of path
+      var hp = href.split(/[\/?&=]/).filter(function (p) {
+        return p && p.length > 3 && !/\d{4,}/.test(p) &&
+               !/^[a-zA-Z0-9]{15,18}$/.test(p);
       });
       if (hp.length > 0)
         r.push("//a[contains(@href," +
@@ -383,7 +414,7 @@ function gen(rawEl) {
   });
 
   // Stable ID
-  if (el.id && /^[a-zA-Z][\w-]*$/.test(el.id) && !/\d{4,}/.test(el.id))
+  if (el.id && /^[a-zA-Z][\w-]*$/.test(el.id) && !isFlakyId(el.id))
     r.push("//*[@id='" + el.id + "']");
 
   // Select
@@ -422,7 +453,7 @@ function gen(rawEl) {
   ];
   while (anc && depth < 8) {
     var aId = anc.id;
-    if (aId && /^[a-zA-Z][\w-]*$/.test(aId) && !/\d{4,}/.test(aId)) {
+    if (aId && /^[a-zA-Z][\w-]*$/.test(aId) && !isFlakyId(aId)) {
       r.push("//*[@id='" + aId + "']//" + t);
       break;
     }
@@ -463,7 +494,7 @@ function gen(rawEl) {
   while (c && c.nodeType === 1 && maxP > 0) {
     var tg = c.tagName.toLowerCase();
     if (tg === "body" || tg === "html") break;
-    if (c.id && /^[a-zA-Z][\w-]*$/.test(c.id) && !/\d{4,}/.test(c.id)) {
+    if (c.id && /^[a-zA-Z][\w-]*$/.test(c.id) && !isFlakyId(c.id)) {
       parts.unshift(tg + "[@id='" + c.id + "']");
       break;
     }
@@ -480,6 +511,348 @@ function gen(rawEl) {
     maxP--;
   }
   if (parts.length) r.push("//" + parts.join("/"));
+
+  // === NEIGHBOR-ANCHORED XPATHS ===
+  // When element's own text isn't unique, find a nearby element
+  // with UNIQUE text and anchor from there using XPath axes.
+
+  /**
+   * Get text content for a "label-like" element.
+   * Returns trimmed text if short enough to be a label.
+   */
+  function labelTextOf(node) {
+    if (!node || !node.tagName) return "";
+    var tx = (node.textContent || "").trim();
+    if (!tx || tx.length > 40) return "";
+    // Skip if element has many children (probably not a label)
+    if (node.children && node.children.length > 3) return "";
+    return tx;
+  }
+
+  /**
+   * Returns the previous sibling element with usable text,
+   * walking up if needed.
+   */
+  function findAnchorLabel(node, direction) {
+    // direction: 'prev' or 'next'
+    var anchors = [];
+    var cur = node;
+    var steps = 0;
+    // Try direct sibling first
+    var sib = direction === "prev"
+      ? cur.previousElementSibling
+      : cur.nextElementSibling;
+    while (sib && steps < 5) {
+      var stx = labelTextOf(sib);
+      if (stx) {
+        anchors.push({
+          text: stx,
+          tag: sib.tagName.toLowerCase(),
+          rel: direction === "prev" ? "follow" : "preceding",
+          distance: steps + 1,
+          isSibling: true
+        });
+      }
+      sib = direction === "prev"
+        ? sib.previousElementSibling
+        : sib.nextElementSibling;
+      steps++;
+    }
+    // Then walk up to parent and look at parent's siblings
+    var par = node.parentElement;
+    steps = 0;
+    while (par && steps < 3) {
+      var psib = direction === "prev"
+        ? par.previousElementSibling
+        : par.nextElementSibling;
+      while (psib) {
+        // Look inside it for labels
+        var inner = psib.querySelectorAll("label,span,h1,h2,h3,h4,h5,strong,legend");
+        for (var ii = 0; ii < inner.length && ii < 3; ii++) {
+          var itx = labelTextOf(inner[ii]);
+          if (itx) {
+            anchors.push({
+              text: itx,
+              tag: inner[ii].tagName.toLowerCase(),
+              rel: direction === "prev" ? "follow" : "preceding",
+              distance: 99,
+              isSibling: false
+            });
+          }
+        }
+        psib = direction === "prev"
+          ? psib.previousElementSibling
+          : psib.nextElementSibling;
+      }
+      par = par.parentElement;
+      steps++;
+    }
+    return anchors;
+  }
+
+  function isUniqueText(anchorText, anchorTag) {
+    try {
+      var xp = "//" + anchorTag + "[normalize-space()=" + wq(anchorText) + "]";
+      var c = document.evaluate(
+        "count(" + xp + ")", document, null,
+        XPathResult.NUMBER_TYPE, null
+      ).numberValue;
+      return c === 1;
+    } catch (e) { return false; }
+  }
+
+  // Build neighbor XPaths from anchors with unique text
+  var prevAnchors = findAnchorLabel(el, "prev");
+  var nextAnchors = findAnchorLabel(el, "next");
+
+  prevAnchors.forEach(function (a) {
+    if (!isUniqueText(a.text, a.tag)) return;
+    if (a.isSibling) {
+      r.push("//" + a.tag + "[normalize-space()=" + wq(a.text) +
+             "]/following-sibling::" + t + "[1]");
+    }
+    r.push("//" + a.tag + "[normalize-space()=" + wq(a.text) +
+           "]/following::" + t + "[1]");
+    // Also generic: any label-like element with that text
+    r.push("//*[normalize-space()=" + wq(a.text) +
+           "]/following::" + t + "[1]");
+  });
+
+  nextAnchors.forEach(function (a) {
+    if (!isUniqueText(a.text, a.tag)) return;
+    if (a.isSibling) {
+      r.push("//" + a.tag + "[normalize-space()=" + wq(a.text) +
+             "]/preceding-sibling::" + t + "[1]");
+    }
+    r.push("//" + a.tag + "[normalize-space()=" + wq(a.text) +
+           "]/preceding::" + t + "[1]");
+  });
+
+  // === TABLE CELL — ANCHOR TO COLUMN HEADER + ROW IDENTITY ===
+  // For elements inside a <td>, build XPaths that anchor to:
+  //   1. Column header (<th>) — column position
+  //   2. Row identifier text — which row
+  //   3. The link's visible text — which item in the cell
+  // This is the most stable way to target table elements when
+  // href is flaky (javascript:void(0), dynamic IDs) and IDs change.
+  var td = el.closest("td");
+  if (td) {
+    var tr = td.closest("tr");
+    var table = td.closest("table");
+    if (table) {
+      // Compute column index
+      var colIdx = 1;
+      var sibTd = td;
+      while (sibTd.previousElementSibling) {
+        sibTd = sibTd.previousElementSibling;
+        colIdx++;
+      }
+      // Find matching th in this column
+      var ths = table.querySelectorAll(
+        "thead th, tr:first-child th"
+      );
+      var headerEl = ths[colIdx - 1];
+      var headerTxt = headerEl
+        ? (headerEl.textContent || "").trim()
+        : "";
+
+      // Get the clicked link's own text (if it's a link)
+      var linkTxt = t === "a"
+        ? (el.textContent || "").trim()
+        : "";
+
+      // === Strategies based on what we have ===
+
+      if (headerTxt && headerTxt.length < 40) {
+        // 1. Link with this text under this column (works
+        //    regardless of href flakiness)
+        if (linkTxt && linkTxt.length < 60) {
+          r.push(
+            "//table//th[normalize-space()=" + wq(headerTxt) +
+            "]/ancestor::table//tbody//tr/td[" + colIdx +
+            "]//a[normalize-space()=" + wq(linkTxt) + "]"
+          );
+          // Same but using contains() for partial text match
+          r.push(
+            "//th[normalize-space()=" + wq(headerTxt) +
+            "]/ancestor::table//td[" + colIdx +
+            "]//a[contains(normalize-space(),.," + wq(linkTxt) +
+            ")]"
+          );
+        }
+        // 2. ANY link in cell under this column (any row)
+        r.push(
+          "//table//th[normalize-space()=" + wq(headerTxt) +
+          "]/ancestor::table//tbody//tr/td[" + colIdx +
+          "]//" + t
+        );
+        // 3. First row's link under this column
+        r.push(
+          "//table//th[normalize-space()=" + wq(headerTxt) +
+          "]/ancestor::table//tbody//tr[1]/td[" + colIdx +
+          "]//" + t
+        );
+      }
+
+      // Row-based strategies
+      if (tr) {
+        // Build a row key from any text other than the
+        // clicked cell — try first cell first, then any
+        // sibling cell with stable text
+        var rowKey = "";
+        var rowKeySource = "";
+        var trCells = tr.querySelectorAll("td");
+        for (var rci = 0; rci < trCells.length; rci++) {
+          if (trCells[rci] === td) continue;
+          var ctx = (trCells[rci].textContent || "").trim();
+          // Skip empty cells, action menus, very long text
+          if (ctx && ctx.length < 60 && ctx.length > 1 &&
+              !/^(edit|delete|view|more)$/i.test(ctx)) {
+            rowKey = ctx;
+            // Get header for that anchor column too
+            rowKeySource = trCells[rci];
+            break;
+          }
+        }
+        if (rowKey) {
+          // 4. Link with text X in row that contains Y
+          if (linkTxt) {
+            r.push(
+              "//tr[.//*[normalize-space()=" + wq(rowKey) +
+              "]]//a[normalize-space()=" + wq(linkTxt) + "]"
+            );
+            r.push(
+              "//tr[.//*[contains(normalize-space(),.," +
+              wq(rowKey) + ")]]//a[normalize-space()=" +
+              wq(linkTxt) + "]"
+            );
+          }
+          // 5. Anything in the row containing Y
+          r.push(
+            "//tr[.//*[normalize-space()=" + wq(rowKey) +
+            "]]//" + t
+          );
+          // 6. Specific column in the row containing Y
+          if (headerTxt) {
+            r.push(
+              "//tr[.//*[normalize-space()=" + wq(rowKey) +
+              "]]/td[" + colIdx + "]//" + t
+            );
+          }
+        }
+
+        // 7. Link with this text — if it's unique within
+        //    the table, that's enough
+        if (linkTxt && linkTxt.length < 60) {
+          r.push("//table//a[normalize-space()=" + wq(linkTxt) + "]");
+        }
+      }
+    }
+  }
+
+  // === HEADING ANCHOR ===
+  // Find the nearest preceding heading (h1-h6, section title)
+  // and anchor from it.
+  var headingTags = ["h1", "h2", "h3", "h4", "h5", "h6"];
+  var nearestHeading = null;
+  var nearestHeadingTxt = "";
+  // Walk up to find a section, then look for heading inside it
+  var section = el.closest(
+    "section,article,fieldset," +
+    ".slds-section,.slds-card,[role='region']"
+  );
+  if (section) {
+    for (var hi = 0; hi < headingTags.length; hi++) {
+      var h = section.querySelector(
+        headingTags[hi] + ",.slds-section__title," +
+        ".slds-card__header-title"
+      );
+      if (h) {
+        var htx = (h.textContent || "").trim();
+        if (htx && htx.length < 60) {
+          nearestHeading = h;
+          nearestHeadingTxt = htx;
+          break;
+        }
+      }
+    }
+  }
+  // Also try preceding heading anywhere in DOM
+  if (!nearestHeading) {
+    var allH = document.querySelectorAll("h1,h2,h3,h4,h5,h6");
+    for (var ai = allH.length - 1; ai >= 0; ai--) {
+      var hpos = allH[ai].compareDocumentPosition(el);
+      if (hpos & Node.DOCUMENT_POSITION_FOLLOWING) {
+        var htxt = (allH[ai].textContent || "").trim();
+        if (htxt && htxt.length < 60 && isUniqueText(htxt, allH[ai].tagName.toLowerCase())) {
+          nearestHeading = allH[ai];
+          nearestHeadingTxt = htxt;
+          break;
+        }
+      }
+    }
+  }
+  if (nearestHeading && nearestHeadingTxt) {
+    var hTag = nearestHeading.tagName.toLowerCase();
+    // "first tag below heading X"
+    r.push("//" + hTag + "[normalize-space()=" + wq(nearestHeadingTxt) +
+           "]/following::" + t + "[1]");
+    // Generic version (any heading-like element)
+    r.push("//*[self::h1 or self::h2 or self::h3 or self::h4 or " +
+           "self::h5 or self::h6][normalize-space()=" +
+           wq(nearestHeadingTxt) + "]/following::" + t + "[1]");
+    // Scoped to section containing heading
+    if (txt) {
+      r.push("//" + hTag + "[normalize-space()=" + wq(nearestHeadingTxt) +
+             "]/ancestor::section[1]//" + t +
+             "[normalize-space()=" + wq(txt) + "]");
+    }
+  }
+
+  // === MODAL / DIALOG SCOPE ===
+  // If element is inside an open modal/dialog, scope XPath to it
+  // This avoids matching the same text in closed/hidden modals
+  var modalAnc = el.closest(
+    "section.slds-modal,[role='dialog']," +
+    "[role='alertdialog'],.uiModal," +
+    ".forceModalContainer"
+  );
+  if (modalAnc) {
+    var modalScope = "//section[contains(@class,'slds-modal')]" +
+                     "[not(contains(@style,'display:none'))]" +
+                     "[not(contains(@style,'display: none'))]";
+    if (txt) {
+      r.push(modalScope + "//" + t +
+             "[normalize-space()=" + wq(txt) + "]");
+    }
+    var bsTxtMod = getDirectSpanText(el);
+    if (bsTxtMod) {
+      r.push(modalScope + "//" + t +
+             "[.//span[text()=" + wq(bsTxtMod) + "]]");
+    }
+    if (el.getAttribute("title")) {
+      r.push(modalScope + "//" + t +
+             "[@title=" + wq(el.getAttribute("title")) + "]");
+    }
+  }
+
+  // === VISIBLE-ONLY XPATH ===
+  // Filter out elements hidden via display:none, visibility:hidden,
+  // or under aria-hidden parents
+  var visFilter =
+    "not(ancestor-or-self::*[contains(@style,'display:none')]) and " +
+    "not(ancestor-or-self::*[contains(@style,'display: none')]) and " +
+    "not(ancestor-or-self::*[@aria-hidden='true']) and " +
+    "not(ancestor-or-self::*[@hidden])";
+  if (txt) {
+    r.push("//" + t + "[normalize-space()=" + wq(txt) +
+           " and " + visFilter + "]");
+  }
+  var bsTxtVis = getDirectSpanText(el);
+  if (bsTxtVis) {
+    r.push("//" + t + "[.//span[text()=" + wq(bsTxtVis) + "] and " +
+           visFilter + "]");
+  }
 
   // Dedupe + validate
   var seen = {}, valid = [];
@@ -522,16 +895,60 @@ function gen(rawEl) {
             });
             seen[indexedXp] = 1;
           }
+          // [last()] is often the visible/active one (modal at end)
+          if (idx === res.snapshotLength) {
+            var lastXp = "(" + best.xp + ")[last()]";
+            if (!seen[lastXp]) {
+              valid.unshift({
+                xp: lastXp,
+                count: countMatches(lastXp)
+              });
+              seen[lastXp] = 1;
+            }
+          }
         }
       } catch (e) {}
     }
+  }
+
+  // Quality score: prefer semantic XPaths over positional
+  function score(xp) {
+    var s = 0;
+    // Positional XPaths are very fragile
+    if (/\[\d+\]\//.test(xp) || /\/\w+\[\d+\]$/.test(xp)) s += 100;
+    // Indexed by position [N] (better than pure positional)
+    if (/^\(/.test(xp)) s += 30;
+    // ID-based XPaths penalized — IDs are often dynamic in SF
+    if (/@id=/.test(xp)) s += 60;
+    // Long XPaths penalty (smaller weight than fragility)
+    s += xp.length / 15;
+    // Bonuses (lower = better)
+    if (xp.indexOf("slds-modal") > -1) s -= 20;
+    if (xp.indexOf("not(ancestor-or-self") > -1) s -= 15;
+    if (/text\(\)|normalize-space/.test(xp)) s -= 12;
+    // Heading-anchored (semantic, very stable)
+    if (/^\/\/h\d\[|self::h1/.test(xp)) s -= 30;
+    // Table cell anchored to column header
+    if (xp.indexOf("//th[") > -1) s -= 35;
+    // Row-anchored (anchored to row identifier text)
+    if (/\/\/tr\[\.\/\//.test(xp)) s -= 35;
+    // Penalize href-based — they're often flaky (record IDs etc)
+    if (/@href=/.test(xp)) s += 50;
+    if (xp.indexOf("javascript") > -1) s += 200;
+    // Label following-sibling/following — common form pattern
+    if (/\/\/label\[/.test(xp)) s -= 20;
+    // Following-sibling on form labels
+    if (/following-sibling/.test(xp)) s -= 8;
+    // data-* attributes are intentional Salesforce hooks
+    if (/@data-(id|name|label|testid)/.test(xp)) s -= 25;
+    return s;
   }
 
   valid.sort(function (a, b) {
     if (a.count === 1 && b.count !== 1) return -1;
     if (b.count === 1 && a.count !== 1) return 1;
     if (a.count !== b.count) return a.count - b.count;
-    return a.xp.length - b.xp.length;
+    return score(a.xp) - score(b.xp);
   });
   return valid.slice(0, 5);
 }
@@ -627,9 +1044,28 @@ function clearHover() {
   }
 }
 
+function deepestUnderPoint(e) {
+  // Use composedPath() to pierce Shadow DOM (like DevTools)
+  try {
+    var path = e.composedPath && e.composedPath();
+    if (path && path.length > 0) {
+      for (var i = 0; i < path.length; i++) {
+        var n = path[i];
+        if (n && n.nodeType === 1 && n.tagName) return n;
+      }
+    }
+  } catch (ex) {}
+  try {
+    var fp = document.elementFromPoint(e.clientX, e.clientY);
+    if (fp) return fp;
+  } catch (ex) {}
+  return e.target;
+}
+
 function onHover(e) {
   if (!on) return;
-  var el = e.target;
+  var el = deepestUnderPoint(e);
+  if (!el || !el.tagName) return;
   if (el.closest && el.closest("#__xf_box,#__xf_toggle")) return;
   if (hoverEl === el) return;
   clearHover();
@@ -957,6 +1393,7 @@ function toggle() {
     document.addEventListener("dblclick", blocker, true);
     document.addEventListener("contextmenu", blocker, true);
     document.addEventListener("mouseover", onHover, true);
+    document.addEventListener("pointermove", onHover, true);
     // Block focus loss so dropdowns/popovers don't close
     document.addEventListener("focusout", focusBlocker, true);
     document.addEventListener("blur", focusBlocker, true);
@@ -971,6 +1408,7 @@ function toggle() {
     document.removeEventListener("dblclick", blocker, true);
     document.removeEventListener("contextmenu", blocker, true);
     document.removeEventListener("mouseover", onHover, true);
+    document.removeEventListener("pointermove", onHover, true);
     document.removeEventListener("focusout", focusBlocker, true);
     document.removeEventListener("blur", focusBlocker, true);
     hide();
