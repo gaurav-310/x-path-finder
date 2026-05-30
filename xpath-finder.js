@@ -676,8 +676,7 @@ function gen(rawEl) {
           r.push(
             "//th[normalize-space()=" + wq(headerTxt) +
             "]/ancestor::table//td[" + colIdx +
-            "]//a[contains(normalize-space(),.," + wq(linkTxt) +
-            ")]"
+            "]//a[contains(.," + wq(linkTxt) + ")]"
           );
         }
         // 2. ANY link in cell under this column (any row)
@@ -696,24 +695,28 @@ function gen(rawEl) {
 
       // Row-based strategies
       if (tr) {
-        // Build a row key from any text other than the
-        // clicked cell — try first cell first, then any
-        // sibling cell with stable text
+        // Pick the cleanest "row key" from another cell.
+        // Prefer cells with short, single-line, simple text.
         var rowKey = "";
-        var rowKeySource = "";
         var trCells = tr.querySelectorAll("td");
+        var bestKey = { score: 1e9, txt: "" };
         for (var rci = 0; rci < trCells.length; rci++) {
           if (trCells[rci] === td) continue;
-          var ctx = (trCells[rci].textContent || "").trim();
-          // Skip empty cells, action menus, very long text
-          if (ctx && ctx.length < 60 && ctx.length > 1 &&
-              !/^(edit|delete|view|more)$/i.test(ctx)) {
-            rowKey = ctx;
-            // Get header for that anchor column too
-            rowKeySource = trCells[rci];
-            break;
+          var raw = (trCells[rci].textContent || "").trim();
+          // Skip empties and obvious action menus
+          if (!raw || raw.length < 2) continue;
+          if (/^(edit|delete|view|more|\u2026)$/i.test(raw)) continue;
+          // Normalize whitespace for the key
+          var clean = raw.replace(/\s+/g, " ").trim();
+          if (clean.length > 50) continue;
+          // Score: shorter + fewer extra elements = better
+          var keyScore = clean.length +
+            (trCells[rci].children.length * 3);
+          if (keyScore < bestKey.score) {
+            bestKey = { score: keyScore, txt: clean };
           }
         }
+        var rowKey = bestKey.txt;
         if (rowKey) {
           // 4. Link with text X in row that contains Y
           if (linkTxt) {
@@ -722,9 +725,8 @@ function gen(rawEl) {
               "]]//a[normalize-space()=" + wq(linkTxt) + "]"
             );
             r.push(
-              "//tr[.//*[contains(normalize-space(),.," +
-              wq(rowKey) + ")]]//a[normalize-space()=" +
-              wq(linkTxt) + "]"
+              "//tr[contains(.," + wq(rowKey) +
+              ")]//a[normalize-space()=" + wq(linkTxt) + "]"
             );
           }
           // 5. Anything in the row containing Y
