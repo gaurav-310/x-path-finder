@@ -1,5 +1,5 @@
 /**
- * Salesforce XPath Finder v8
+ * Salesforce XPath Finder v5
  * - Blocks dropdown clicks (mousedown + click) so dropdowns don't open
  * - User can manually open a dropdown, then click inside to inspect options
  * - Live hover highlight (like DevTools inspect)
@@ -16,6 +16,32 @@ var hoverOutline = "";
 var hoverBg = "";
 
 var SVG_TAGS = /^(svg|path|use|circle|line|rect|polygon|g|img|i)$/;
+
+// Detect dynamic-looking VALUES (text content / attribute values) that
+// change between page loads — case numbers with dates, timestamps, GUIDs,
+// long digit sequences, ISO dates, time stamps, percentage with decimals.
+function looksDynamic(v) {
+  if (!v) return false;
+  var s = String(v);
+  // Date patterns (any common format)
+  if (/\d{4}[-/]\d{1,2}[-/]\d{1,2}/.test(s)) return true;
+  if (/\d{1,2}[-/]\d{1,2}[-/]\d{2,4}/.test(s)) return true;
+  // Time patterns
+  if (/\d{1,2}:\d{2}(:\d{2})?\s*(am|pm)?/i.test(s)) return true;
+  // Long digit sequences (case numbers, IDs)
+  if (/\d{5,}/.test(s)) return true;
+  // GUID / UUID
+  if (/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}/i.test(s)) return true;
+  // Salesforce 15/18-char record ID
+  if (/\b[a-zA-Z0-9]{15}(?:[a-zA-Z0-9]{3})?\b/.test(s) && s.length >= 15) return true;
+  // Prefix-number patterns: CASE-..., TKT-..., ORD-..., REF-..., SO-...
+  if (/^(case|tkt|ord|ref|so|inv|po|sl|cn|sr|sub)-?\d{3,}/i.test(s)) return true;
+  // Money-with-cents (often varies)
+  if (/^\$?\d+\.\d{2}$/.test(s) && parseFloat(s.replace(/[^\d.]/g, "")) > 99) return true;
+  // Counters like "(3)", "(125)"
+  if (/^\(\d+\)$/.test(s)) return true;
+  return false;
+}
 
 // Detect dynamic/auto-generated IDs (Salesforce LWC, Aura, Angular, Ember, etc.)
 // These IDs change across page loads or module updates and should be avoided.
@@ -207,23 +233,14 @@ function gen(rawEl) {
   // Button
   if (t === "button") {
     var bsTxt = getDirectSpanText(el);
-    if (bsTxt) {
+    if (bsTxt)
       r.push("//span[text()=" + wq(bsTxt) +
         "]/parent::button");
-      r.push("//button[.//span[contains(text()," +
-        wq(bsTxt) + ")]]");
-    }
     var bTitle = el.getAttribute("title");
     if (bTitle)
       r.push("//button[@title=" + wq(bTitle) + "]");
-    if (txt) {
-      r.push("//button[contains(.," + wq(txt) + ")]");
-      if (!bsTxt)
-        r.push("//button[normalize-space()=" + wq(txt) + "]");
-    }
-    if (bsTxt && bTitle)
-      r.push("//button[@title=" + wq(bTitle) +
-        " and .//span[text()=" + wq(bsTxt) + "]]");
+    if (txt && !bsTxt)
+      r.push("//button[normalize-space()=" + wq(txt) + "]");
   }
 
   // Link
@@ -233,9 +250,12 @@ function gen(rawEl) {
       r.push("//a[text()=" + wq(txt) +
         "][@data-label=" + wq(adl) + "]");
     if (txt) {
-      r.push("//a[text()=" + wq(txt) + "]");
-      r.push("//a[contains(text()," + wq(txt) + ")]");
       r.push("//a[normalize-space()=" + wq(txt) + "]");
+      // contains() only useful if exact doesn't work; finder will
+      // pick the unique one in the ranking
+      if (txt.length > 15)
+        r.push("//a[contains(normalize-space(),'" +
+               txt.substring(0, 15).replace(/'/g, "") + "')]");
     }
     var aTitle = el.getAttribute("title");
     if (aTitle)
@@ -276,15 +296,10 @@ function gen(rawEl) {
       var pt = par ? par.tagName.toLowerCase() : "";
       if (pt === "button") {
         r.push("//span[text()=" + wq(sTxt) + "]/parent::button");
-        r.push("//span[contains(text()," + wq(sTxt) +
-          ")]/parent::button");
       } else if (pt === "a") {
         r.push("//span[text()=" + wq(sTxt) + "]/parent::a");
-        r.push("//span[contains(text()," + wq(sTxt) +
-          ")]/parent::a");
       } else {
         r.push("//span[text()=" + wq(sTxt) + "]");
-        r.push("//span[contains(text()," + wq(sTxt) + ")]");
       }
     }
   }
@@ -628,6 +643,17 @@ function gen(rawEl) {
            "]/preceding::" + t + "[1]");
   });
 
+  // === TABLE HEADER (TH) — simple cases ===
+  // If user clicked on a column header, just give clean header XPaths.
+  // Don't generate sort/dropdown related complexity.
+  if (t === "th") {
+    var thTxt = (el.textContent || "").trim();
+    if (thTxt && thTxt.length < 50) {
+      r.push("//th[normalize-space()=" + wq(thTxt) + "]");
+      r.push("//th[.//*[normalize-space()=" + wq(thTxt) + "]]");
+    }
+  }
+
   // === TABLE CELL — ANCHOR TO COLUMN HEADER + ROW IDENTITY ===
   // For elements inside a <td>, build XPaths that anchor to:
   //   1. Column header (<th>) — column position
@@ -664,28 +690,54 @@ function gen(rawEl) {
       // === Strategies based on what we have ===
 
       if (headerTxt && headerTxt.length < 40) {
-        // 1. Link with this text under this column (works
-        //    regardless of href flakiness)
+        // === TEXT-INDEPENDENT (when link text is dynamic) ===
+        // Column index computed dynamically from header position
+        // — survives column reorders too.
+        var colByHeader =
+          "count(//th[normalize-space()=" + wq(headerTxt) +
+          "]/preceding-sibling::th)+1";
+
+        // T1. First link in the column with this header,
+        //     first row (no link text needed)
+        r.push(
+          "//th[normalize-space()=" + wq(headerTxt) +
+          "]/ancestor::table//tbody//tr[1]/td[" +
+          colByHeader + "]//a[1]"
+        );
+        // T2. First link in the column (any row) — fragile if
+        //     there are multiple rows
+        r.push(
+          "//th[normalize-space()=" + wq(headerTxt) +
+          "]/ancestor::table//tbody//tr/td[" +
+          colByHeader + "]//a[1]"
+        );
+        // T3. Static colIdx version (only works if columns
+        //     never reorder)
+        r.push(
+          "//th[normalize-space()=" + wq(headerTxt) +
+          "]/ancestor::table//tbody//tr[1]/td[" + colIdx +
+          "]//a[1]"
+        );
+
+        // === TEXT-DEPENDENT (only when link text is stable) ===
         if (linkTxt && linkTxt.length < 60) {
           r.push(
             "//table//th[normalize-space()=" + wq(headerTxt) +
             "]/ancestor::table//tbody//tr/td[" + colIdx +
             "]//a[normalize-space()=" + wq(linkTxt) + "]"
           );
-          // Same but using contains() for partial text match
           r.push(
             "//th[normalize-space()=" + wq(headerTxt) +
             "]/ancestor::table//td[" + colIdx +
             "]//a[contains(.," + wq(linkTxt) + ")]"
           );
         }
-        // 2. ANY link in cell under this column (any row)
+        // Generic any-tag versions (not just <a>)
         r.push(
           "//table//th[normalize-space()=" + wq(headerTxt) +
           "]/ancestor::table//tbody//tr/td[" + colIdx +
           "]//" + t
         );
-        // 3. First row's link under this column
         r.push(
           "//table//th[normalize-space()=" + wq(headerTxt) +
           "]/ancestor::table//tbody//tr[1]/td[" + colIdx +
@@ -718,6 +770,27 @@ function gen(rawEl) {
         }
         var rowKey = bestKey.txt;
         if (rowKey) {
+          // === TEXT-INDEPENDENT row anchors ===
+          // First link in the row containing this row-key
+          r.push(
+            "//tr[.//*[normalize-space()=" + wq(rowKey) +
+            "]]//a[1]"
+          );
+          // First link in a specific column of the row
+          if (headerTxt) {
+            r.push(
+              "//tr[.//*[normalize-space()=" + wq(rowKey) +
+              "]]/td[" + colIdx + "]//a[1]"
+            );
+            // Most robust combo — row id + header-counted column
+            r.push(
+              "//tr[.//*[normalize-space()=" + wq(rowKey) +
+              "]]/td[count(//th[normalize-space()=" +
+              wq(headerTxt) +
+              "]/preceding-sibling::th)+1]//a[1]"
+            );
+          }
+
           // 4. Link with text X in row that contains Y
           if (linkTxt) {
             r.push(
@@ -820,9 +893,8 @@ function gen(rawEl) {
     ".forceModalContainer"
   );
   if (modalAnc) {
-    var modalScope = "//section[contains(@class,'slds-modal')]" +
-                     "[not(contains(@style,'display:none'))]" +
-                     "[not(contains(@style,'display: none'))]";
+    var modalScope = "//section[contains(@class,'slds-modal') " +
+                     "and not(contains(@style,'display:none'))]";
     if (txt) {
       r.push(modalScope + "//" + t +
              "[normalize-space()=" + wq(txt) + "]");
@@ -838,22 +910,49 @@ function gen(rawEl) {
     }
   }
 
-  // === VISIBLE-ONLY XPATH ===
-  // Filter out elements hidden via display:none, visibility:hidden,
-  // or under aria-hidden parents
+  // === VISIBLE-ONLY XPATH (kept short and readable) ===
+  // Use a single compact predicate that covers the common cases
   var visFilter =
-    "not(ancestor-or-self::*[contains(@style,'display:none')]) and " +
-    "not(ancestor-or-self::*[contains(@style,'display: none')]) and " +
-    "not(ancestor-or-self::*[@aria-hidden='true']) and " +
-    "not(ancestor-or-self::*[@hidden])";
-  if (txt) {
-    r.push("//" + t + "[normalize-space()=" + wq(txt) +
-           " and " + visFilter + "]");
+    "not(ancestor-or-self::*[@aria-hidden='true' or @hidden]) and " +
+    "not(ancestor-or-self::*[contains(@style,'display:none')])";
+  // Only add a visible-only variant when text-based XPath might match
+  // multiple elements (otherwise it's redundant noise)
+  if (txt && txt.length <= 30) {
+    var simpleTxt = "//" + t + "[normalize-space()=" + wq(txt) + "]";
+    if (countMatches(simpleTxt) > 1) {
+      r.push("//" + t + "[normalize-space()=" + wq(txt) +
+             " and " + visFilter + "]");
+    }
   }
-  var bsTxtVis = getDirectSpanText(el);
-  if (bsTxtVis) {
-    r.push("//" + t + "[.//span[text()=" + wq(bsTxtVis) + "] and " +
-           visFilter + "]");
+
+  // === COMBINATION XPATHS ===
+  // When single attribute isn't unique, try combining 2 stable
+  // attributes/text into one XPath. Skip dynamic-looking values.
+  var stableProps = [];
+  if (txt && txt.length < 50 && !looksDynamic(txt)) {
+    stableProps.push({
+      cond: "normalize-space()=" + wq(txt),
+      key: "text"
+    });
+  }
+  ["title", "name", "placeholder", "data-id", "data-label",
+   "data-name", "data-aura-class", "aria-label", "role"]
+    .forEach(function (a) {
+      var v = el.getAttribute(a);
+      if (!v || v.length > 60 || looksDynamic(v)) return;
+      stableProps.push({
+        cond: "@" + a + "=" + wq(v),
+        key: a
+      });
+    });
+  // Build pair combinations
+  for (var i = 0; i < stableProps.length; i++) {
+    for (var j = i + 1; j < stableProps.length; j++) {
+      var combo = "//" + t + "[" +
+                  stableProps[i].cond + " and " +
+                  stableProps[j].cond + "]";
+      r.push(combo);
+    }
   }
 
   // Dedupe + validate
@@ -934,9 +1033,22 @@ function gen(rawEl) {
     if (xp.indexOf("//th[") > -1) s -= 35;
     // Row-anchored (anchored to row identifier text)
     if (/\/\/tr\[\.\/\//.test(xp)) s -= 35;
+    // Column index computed from header (survives reorder)
+    if (xp.indexOf("count(//th[") > -1) s -= 30;
+    // Position-only link selectors (good when text is dynamic)
+    if (/\/\/a\[1\]/.test(xp) || /\/\/a\[last\(\)\]/.test(xp)) s -= 5;
+    // Combination XPath (two stable attributes) — very precise
+    if (/\sand\s/.test(xp) && (xp.match(/=/g) || []).length >= 2) s -= 18;
     // Penalize href-based — they're often flaky (record IDs etc)
     if (/@href=/.test(xp)) s += 50;
     if (xp.indexOf("javascript") > -1) s += 200;
+    // Penalize XPaths whose quoted values look dynamic
+    // (case numbers, dates, timestamps, etc.)
+    var quoted = xp.match(/'([^']+)'/g) || [];
+    quoted.forEach(function (q) {
+      var v = q.slice(1, -1);
+      if (looksDynamic(v)) s += 80;
+    });
     // Label following-sibling/following — common form pattern
     if (/\/\/label\[/.test(xp)) s -= 20;
     // Following-sibling on form labels
@@ -952,7 +1064,52 @@ function gen(rawEl) {
     if (a.count !== b.count) return a.count - b.count;
     return score(a.xp) - score(b.xp);
   });
-  return valid.slice(0, 5);
+
+  // === DIVERSITY FILTER ===
+  // Categorize each XPath by which "technique" it uses,
+  // then return up to 5 from DIFFERENT techniques so the
+  // user sees variety, not 3 versions of the same approach.
+  function category(xp) {
+    if (xp.indexOf("//th[") > -1 && xp.indexOf("//tr[") > -1) return "table:row+col";
+    if (xp.indexOf("//th[") > -1) return "table:header";
+    if (/\/\/tr\[\.\/\//.test(xp)) return "table:row";
+    if (xp.indexOf("slds-modal") > -1) return "modal";
+    if (xp.indexOf("not(ancestor-or-self") > -1) return "visible";
+    if (/following-sibling/.test(xp)) return "sibling:follow";
+    if (/preceding-sibling/.test(xp)) return "sibling:precede";
+    if (/following::/.test(xp)) return "follow:axis";
+    if (/preceding::/.test(xp)) return "precede:axis";
+    if (xp.indexOf("ancestor::") > -1) return "ancestor";
+    if (xp.indexOf("parent::") > -1) return "parent";
+    if (/@data-/.test(xp)) return "data-attr";
+    if (/@aria-/.test(xp)) return "aria";
+    if (/@id=/.test(xp)) return "id";
+    if (/@href=/.test(xp)) return "href";
+    if (/@title=/.test(xp)) return "title";
+    if (/@name=/.test(xp)) return "name";
+    if (/@placeholder=/.test(xp)) return "placeholder";
+    if (/contains\(@class/.test(xp)) return "class";
+    // Combination XPath = two stable conditions joined by " and "
+    if (/\sand\s/.test(xp) && (xp.match(/=/g) || []).length >= 2) return "combination";
+    if (/normalize-space|text\(\)/.test(xp)) return "text";
+    return "other";
+  }
+  var picked = [], usedCat = {};
+  // First pass: one per category
+  for (var pi = 0; pi < valid.length && picked.length < 5; pi++) {
+    var cat = category(valid[pi].xp);
+    if (!usedCat[cat]) {
+      usedCat[cat] = true;
+      picked.push(valid[pi]);
+    }
+  }
+  // Second pass: fill remaining slots with best remaining
+  for (var pj = 0; pj < valid.length && picked.length < 5; pj++) {
+    if (picked.indexOf(valid[pj]) === -1) {
+      picked.push(valid[pj]);
+    }
+  }
+  return picked;
 }
 
 function isClickable(el) {
