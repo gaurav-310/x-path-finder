@@ -45,61 +45,7 @@ function findClickParent(el){
   }return el;
 }
 
-function resolveTarget(e){
-  var deep=e.target;
-  try{var path=e.composedPath&&e.composedPath();
-    if(path&&path.length>0){for(var i=0;i<path.length;i++){if(path[i].nodeType===1&&path[i].tagName){deep=path[i];break;}}}
-  }catch(ex){}
-  var t=stag(deep);
-  var isKnown=/^(a|button|input|select|textarea|span|div|li|td|th|label|img|p|h[1-6]|svg|i)$/.test(t);
-  if(!isKnown){
-    var inner=deep.querySelector("a,button,span,input");
-    if(inner)return inner;
-    if(deep.shadowRoot){var si=deep.shadowRoot.querySelector("a,button,span,input");if(si)return si;}
-  }
-  if((t==="div"||t==="nav"||t==="li"||t==="ul")&&deep.children.length>0){
-    var links=deep.querySelectorAll("a,button");
-    if(links.length===1)return links[0];
-    if(links.length>1){var best=null,bd=Infinity;
-      links.forEach(function(lnk){var rect=lnk.getBoundingClientRect();
-        var d=Math.sqrt(Math.pow(e.clientX-(rect.left+rect.width/2),2)+Math.pow(e.clientY-(rect.top+rect.height/2),2));
-        if(d<bd){bd=d;best=lnk;}});
-      if(best)return best;}
-  }
-  return deep;
-}
-
-function countXP(xp){try{return document.evaluate("count("+xp+")",document,null,XPathResult.NUMBER_TYPE,null).numberValue;}catch(e){return 999;}}
-
-function bestXPath(el){
-  var candidates=getAllXPaths(el);
-  for(var i=0;i<candidates.length;i++){if(countXP(candidates[i])===1)return candidates[i];}
-  return candidates.length>0?candidates[0]:getSfXPathBasic(el);
-}
-
-function getAllXPaths(el){
-  if(!el||!el.tagName)return[];
-  var t=stag(el),r=[];
-  var txt="";try{txt=(el.textContent||"").trim();}catch(e){}
-  if(txt.length>50)txt="";
-  if(t.indexOf("-")>0){
-    var ca=["data-id","data-name","data-label","data-tracking-type","aria-label","title"];
-    ca.forEach(function(a){var v=el.getAttribute(a);if(v&&v.length<80)r.push("//"+t+"[@"+a+"="+wq(v)+"]");});
-    if(el.id&&!/\d{4,}/.test(el.id))r.push("//"+t+"[@id='"+el.id+"']");
-    try{if(document.querySelectorAll(t).length===1)r.push("//"+t);}catch(ex){}
-  }
-  try{var root=el.getRootNode&&el.getRootNode();
-    if(root&&root!==document&&root.host){var h=root.host,ht=stag(h);
-      var ha=["data-id","data-name","data-label","data-tracking-type","aria-label","title"];
-      ha.forEach(function(a){var hv=h.getAttribute(a);if(hv)r.push("//"+ht+"[@"+a+"="+wq(hv)+"]");});
-      if(h.id&&!/\d{4,}/.test(h.id))r.push("//"+ht+"[@id='"+h.id+"']");
-    }}catch(e){}
-  r.push(getSfXPathBasic(el));
-  var seen={},out=[];r.forEach(function(x){if(!seen[x]){seen[x]=1;out.push(x);}});
-  return out;
-}
-
-function getSfXPathBasic(el){
+function getSfXPath(el){
   if(!el||!el.ownerDocument)return"";
   var t=stag(el);
   if(t==="button"){
@@ -193,7 +139,7 @@ function addStep(action,rawEl,value){
   if(!rawEl)return;
   var el=(action==="click"||action==="submit"||action==="hover_click")?findClickParent(rawEl):rawEl;
   stepIndex++;
-  var xp=bestXPath(el),isClk=action==="click"||action==="submit"||action==="hover_click"||action==="key";
+  var xp=getSfXPath(el),isClk=action==="click"||action==="submit"||action==="hover_click"||action==="key";
   var desc=isClk?clickDesc(el):fieldLabel(el);
   var oid=makeObjId(action,el,desc);
   steps.push({n:stepIndex,action:action,desc:desc,objectId:oid,xpath:xp,tag:stag(el),inputType:inputType(el),value:value||""});
@@ -213,7 +159,7 @@ function needsHover(el){return!!(el.closest("[role='menu'],[role='menubar'],[rol
 function detectAction(el){if(isSubmit(el))return"submit";if(needsHover(el))return"hover_click";return"click";}
 
 function onClick(e){if(!isRecording||isUI(e.target))return;
-  var el=resolveTarget(e),t=stag(el);
+  var el=e.target,t=stag(el);
   if(t==="input"&&(el.type==="checkbox"||el.type==="radio")){e.preventDefault();addStep("check",el,(!el.checked)?"true":"false");return;}
   flushInput();
   if(t==="option"){var s=el.closest("select");if(s){addStep("select",s,el.textContent.trim());return;}}
@@ -224,7 +170,7 @@ function onClick(e){if(!isRecording||isUI(e.target))return;
 }
 
 function onKey(e){if(!isRecording||isUI(e.target))return;var k=e.key;
-  if(k==="Enter"||k==="Tab"||k==="Escape"){if(k!=="Tab")flushInput();addStep("key",resolveTarget(e),k.toUpperCase());}}
+  if(k==="Enter"||k==="Tab"||k==="Escape"){if(k!=="Tab")flushInput();addStep("key",e.target,k.toUpperCase());}}
 
 function onFocus(e){if(!isRecording||isUI(e.target))return;var el=e.target,t=stag(el);
   if(t==="input"||t==="textarea"||t==="select"||el.getAttribute("contenteditable")==="true"){flushInput();lastFocusedEl=el;lastFocusedValue=el.value||"";}}
@@ -278,11 +224,41 @@ function genHelpers(){var u={};steps.forEach(function(s){u[s.action]=true;});
   if(u.key){L.push("public void hitKeyOnScreen(String keyName, String screenName) {","    WebElement activeEl = DriverManagerThreadSafe.getDriver().switchTo().activeElement();","    if (keyName.equalsIgnoreCase(\"ENTER\")) activeEl.sendKeys(Keys.ENTER);","    else if (keyName.equalsIgnoreCase(\"TAB\")) activeEl.sendKeys(Keys.TAB);","    else if (keyName.equalsIgnoreCase(\"ESCAPE\")) activeEl.sendKeys(Keys.ESCAPE);","    Thread.sleep(1000);","}","");}
   return L.join("\n");}
 
+// Console replay script — mirrors exactly what the Java helpers do
+// (click / fill with input+change+blur / select / key). Paste in
+// Console to verify the whole flow before writing any Java.
+function genConsoleTest(){
+  var L=[];
+  L.push("(async function(){");
+  L.push("  function xp(p){return document.evaluate(p,document,null,XPathResult.FIRST_ORDERED_NODE_TYPE,null).singleNodeValue;}");
+  L.push("  function wait(ms){return new Promise(function(r){setTimeout(r,ms);});}");
+  L.push("  function hl(e){try{e.scrollIntoView({block:'center'});e.style.outline='3px solid #e53935';setTimeout(function(){e.style.outline='';},700);}catch(x){}}");
+  L.push("  function clk(p){var e=xp(p);if(!e){console.error('NOT FOUND:',p);return false;}hl(e);e.focus&&e.focus();e.click();console.log('clicked:',p);return true;}");
+  L.push("  function fill(p,v){var e=xp(p);if(!e){console.error('NOT FOUND:',p);return false;}hl(e);e.focus();e.value=v;e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));e.dispatchEvent(new Event('blur',{bubbles:true}));console.log('filled:',p,'=',v);return true;}");
+  L.push("  function sel(p,v){var e=xp(p);if(!e){console.error('NOT FOUND:',p);return false;}hl(e);if(e.tagName==='SELECT'){for(var i=0;i<e.options.length;i++){if(e.options[i].textContent.trim()===v){e.selectedIndex=i;break;}}e.dispatchEvent(new Event('change',{bubbles:true}));}else{e.click();}console.log('selected:',v,'in',p);return true;}");
+  L.push("  function key(p,k){var e=xp(p)||document.activeElement;hl(e);var kc={ENTER:13,TAB:9,ESCAPE:27}[k]||13;e.dispatchEvent(new KeyboardEvent('keydown',{key:k.charAt(0)+k.slice(1).toLowerCase(),keyCode:kc,bubbles:true}));console.log('key:',k);return true;}");
+  L.push("  console.log('--- REPLAY START ---');");
+  steps.forEach(function(s){
+    var p=JSON.stringify(s.xpath);
+    if(s.action==="click"||s.action==="submit"||s.action==="hover_click"||s.action==="check")
+      L.push("  clk("+p+"); await wait(900);");
+    else if(s.action==="fill")
+      L.push("  fill("+p+","+JSON.stringify(s.value||"")+"); await wait(900);");
+    else if(s.action==="select")
+      L.push("  sel("+p+","+JSON.stringify(s.value||"")+"); await wait(900);");
+    else if(s.action==="key")
+      L.push("  key("+p+","+JSON.stringify(s.value||"ENTER")+"); await wait(600);");
+  });
+  L.push("  console.log('--- REPLAY DONE ---');");
+  L.push("})();");
+  return L.join("\n");
+}
+
 function escH(s){var d=document.createElement("div");d.textContent=s;return d.innerHTML;}
 function cpTxt(t){if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(function(){alert("Copied!");});}else{var a=document.createElement("textarea");a.value=t;document.body.appendChild(a);a.select();document.execCommand("copy");document.body.removeChild(a);alert("Copied!");}}
 
 function showOut(){
-  var xml=genXML(),ghk=genGherkin(),sd=genStepDefs(),hm=genHelpers();
+  var xml=genXML(),ghk=genGherkin(),sd=genStepDefs(),hm=genHelpers(),ct=genConsoleTest();
   var ps="background:#2d2d2d;padding:10px;overflow:auto;white-space:pre-wrap;max-height:200px;border-radius:4px;",
       bs="cursor:pointer;padding:3px 10px;font-size:11px;background:#455a64;color:#fff;border:none;border-radius:3px;margin-left:8px;";
   var h='<div id="'+OID+'" style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#1e1e1e;color:#d4d4d4;padding:20px;border-radius:8px;width:88%;max-width:950px;max-height:92%;overflow:auto;z-index:999999;font-family:monospace;font-size:12px;box-shadow:0 4px 20px rgba(0,0,0,0.5);">';
@@ -291,9 +267,10 @@ function showOut(){
   h+='<p><b>2. Gherkin (.feature)</b><button class="xr-cp" data-t="ghk" style="'+bs+'">Copy</button></p><pre style="'+ps+'">'+escH(ghk)+"</pre>";
   h+='<p><b>3. @Then (StepDefinition.java)</b><button class="xr-cp" data-t="sd" style="'+bs+'">Copy</button></p><pre style="'+ps+'">'+escH(sd)+"</pre>";
   h+='<p><b>4. Helpers (StepDefinitionHelperWeb.java)</b><button class="xr-cp" data-t="hm" style="'+bs+'">Copy</button></p><pre style="'+ps+'">'+escH(hm)+"</pre>";
+  h+='<p><b>5. Console Test (paste in Console to replay & verify)</b><button class="xr-cp" data-t="ct" style="'+bs+'background:#1565c0;">Copy</button></p><pre style="'+ps+'">'+escH(ct)+"</pre>";
   h+='</div><div id="'+BID+'" style="position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:999998;"></div>';
   document.body.insertAdjacentHTML("beforeend",h);
-  var cm={xml:xml,ghk:ghk,sd:sd,hm:hm};
+  var cm={xml:xml,ghk:ghk,sd:sd,hm:hm,ct:ct};
   document.querySelectorAll(".xr-cp").forEach(function(b){b.onclick=function(e){e.stopPropagation();cpTxt(cm[b.getAttribute("data-t")]);};});
   document.getElementById("xr-close").onclick=closeOut;document.getElementById(BID).onclick=closeOut;}
 
