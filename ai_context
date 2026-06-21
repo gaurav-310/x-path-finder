@@ -1,5 +1,5 @@
 /**
- * sSalesforce XPath Finder v10 (clean rebuild)
+ * Salesforce XPath Finder v10 (clean rebuild)
  *
  * Click any element -> get up to 6 ranked, validated XPath suggestions.
  * Built for Salesforce Lightning (Shadow DOM, dynamic IDs, tables, grids).
@@ -863,6 +863,44 @@ function describeShort(el) {
   return t + idp + rolep + (tx ? ' "' + tx + '"' : "");
 }
 
+// If the element is a dropdown option/trigger, enumerate ALL options
+// in the open listbox with both by-text and by-position XPaths.
+function collectDropdownOptions(el) {
+  var listbox = el.closest && el.closest(
+    "[role='listbox'],ul.slds-listbox,.slds-dropdown,lightning-base-combobox"
+  );
+  if (!listbox) {
+    // maybe a sibling/visible listbox is open elsewhere
+    listbox = document.querySelector("[role='listbox'],ul.slds-listbox");
+  }
+  if (!listbox) return null;
+
+  var opts = listbox.querySelectorAll(
+    "[role='option'],lightning-base-combobox-item,li"
+  );
+  if (!opts.length) return null;
+
+  var out = [];
+  for (var i = 0; i < opts.length; i++) {
+    var o = opts[i];
+    var otext = fullText(o);
+    if (otext.length > 60) {
+      var sp = o.querySelector("span");
+      otext = sp ? sp.textContent.trim() : otext.substring(0, 60);
+    }
+    var dyn = looksDynamic(otext);
+    out.push({
+      index: i + 1,
+      text: otext,
+      dynamic: dyn,
+      byText: dyn ? "" :
+        "//*[@role='option'][normalize-space()=" + wq(otext) + "]",
+      byPosition: "(//*[@role='option'])[" + (i + 1) + "]"
+    });
+  }
+  return out;
+}
+
 // Build a structured object holding everything the AI needs
 function buildExtract(el, candidates) {
   var t = tagOf(el);
@@ -930,10 +968,15 @@ function buildExtract(el, candidates) {
   }
   if (!bestPick && candidates.length) bestPick = candidates[0].xp;
 
+  var kindForOpts = detectKind(el);
+  var dropdownOptions = (kindForOpts === "dropdown-option" || kindForOpts === "dropdown-trigger")
+    ? collectDropdownOptions(el) : null;
+
   return {
     url: pageUrl,
     targetDescription: describeShort(el),
     bestXPath: bestPick,
+    dropdownOptions: dropdownOptions,
     tag: t,
     kind: kind,
     interaction: interactionFor(kind),
@@ -997,6 +1040,16 @@ function extractToText(x) {
   if (x.dynamicValues.length) {
     L.push("");
     L.push("DYNAMIC_VALUES (avoid these): " + JSON.stringify(x.dynamicValues));
+  }
+  if (x.dropdownOptions && x.dropdownOptions.length) {
+    L.push("");
+    L.push("DROPDOWN OPTIONS (all available in the open list):");
+    x.dropdownOptions.forEach(function (o) {
+      L.push("  #" + o.index + "  " + JSON.stringify(o.text) +
+             (o.dynamic ? "  (text looks dynamic -> use position)" : ""));
+      if (o.byText) L.push("       byText:     " + o.byText);
+      L.push("       byPosition: " + o.byPosition);
+    });
   }
   L.push("");
   L.push("HTML: " + x.html);
