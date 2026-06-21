@@ -97,17 +97,24 @@ function looksDynamic(v) {
   return false;
 }
 
-// Walk up from an SVG/icon/span to a real clickable element
+// Walk up from an SVG/icon/span to a real clickable element.
+// Crosses shadow boundaries (e.g. svg inside lightning-primitive-icon
+// shadow -> jump to the host -> reach the parent <button>).
 function walkUpToClickable(el) {
   var cur = el, depth = 0;
-  while (cur && depth < 6) {
+  while (cur && depth < 10) {
     var t = tagOf(cur);
     if (t === "button" || t === "a") return cur;
     var role = cur.getAttribute && cur.getAttribute("role");
     if (role === "button" || role === "menuitem" || role === "tab" ||
         role === "option" || role === "link") return cur;
     if (t === "div" && cur.getAttribute && cur.getAttribute("onclick")) return cur;
-    cur = cur.parentElement; depth++;
+    if (cur.parentElement) { cur = cur.parentElement; }
+    else {
+      var root = cur.getRootNode && cur.getRootNode();
+      cur = (root && root.host) ? root.host : null;
+    }
+    depth++;
   }
   return el;
 }
@@ -124,14 +131,20 @@ function isClickable(el) {
   return false;
 }
 
+// Next element going up, crossing shadow boundaries (host elements).
+function parentAcrossShadow(el) {
+  if (!el) return null;
+  if (el.parentElement) return el.parentElement;
+  var root = el.getRootNode && el.getRootNode();
+  return (root && root.host) ? root.host : null;
+}
+
 // Walk up the DOM, jumping across shadow boundaries (host elements).
 function closestAcrossShadow(el, selector) {
   var cur = el;
   while (cur) {
     if (cur.nodeType === 1 && cur.matches && cur.matches(selector)) return cur;
-    if (cur.parentElement) { cur = cur.parentElement; continue; }
-    var root = cur.getRootNode && cur.getRootNode();
-    cur = (root && root.host) ? root.host : null;
+    cur = parentAcrossShadow(cur);
   }
   return null;
 }
@@ -289,14 +302,29 @@ function gen(rawEl) {
 
   // ---------- Button ----------
   if (t === "button") {
-    var bSpan = el.querySelector(":scope > span, :scope > div > span") || el.querySelector("span");
-    var bSpanTxt = bSpan ? bSpan.textContent.trim() : "";
-    if (bSpanTxt && bSpanTxt.length < 50 && !looksDynamic(bSpanTxt))
-      r.push("//span[text()=" + wq(bSpanTxt) + "]/parent::button");
+    // title (close/icon buttons usually have it)
     if (el.getAttribute("title"))
       r.push("//button[@title=" + wq(el.getAttribute("title")) + "]");
+    // aria-label
+    if (el.getAttribute("aria-label") && !looksDynamic(el.getAttribute("aria-label")))
+      r.push("//button[@aria-label=" + wq(el.getAttribute("aria-label")) + "]");
+    // assistive text span (icon-only buttons: <span class="slds-assistive-text">Close</span>)
+    var asst = el.querySelector(".slds-assistive-text,[class*='assistive']");
+    var asstTxt = asst ? asst.textContent.trim() : "";
+    if (asstTxt && asstTxt.length < 50 && !looksDynamic(asstTxt))
+      r.push("//button[.//span[normalize-space()=" + wq(asstTxt) + "]]");
+    // visible span text
+    var bSpan = el.querySelector(":scope > span, :scope > div > span") || el.querySelector("span");
+    var bSpanTxt = bSpan ? bSpan.textContent.trim() : "";
+    if (bSpanTxt && bSpanTxt.length < 50 && !looksDynamic(bSpanTxt) && bSpanTxt !== asstTxt)
+      r.push("//span[text()=" + wq(bSpanTxt) + "]/parent::button");
     if (txt && !bSpanTxt && !looksDynamic(txt))
       r.push("//button[normalize-space()=" + wq(txt) + "]");
+    // stable class (e.g. slds-modal__close)
+    var cls = (el.getAttribute("class") || "").split(/\s+/).filter(function (c) {
+      return /close|modal__close|cancel|next|save|submit/.test(c) && !looksDynamic(c);
+    })[0];
+    if (cls) r.push("//button[contains(@class," + wq(cls) + ")]");
   }
 
   // ---------- Link ----------
@@ -488,15 +516,16 @@ function gen(rawEl) {
   return rankAndPick(r, el);
 }
 
-// Find nearest clickable ancestor (button / a / [role=button|link|...])
+// Find nearest clickable ancestor (button / a / [role=button|link|...]),
+// crossing shadow boundaries.
 function clickableAncestor(el) {
-  var cur = el.parentElement, depth = 0;
-  while (cur && depth < 5) {
+  var cur = parentAcrossShadow(el), depth = 0;
+  while (cur && depth < 8) {
     var ct = tagOf(cur);
     if (ct === "button" || ct === "a") return cur;
     var role = cur.getAttribute && cur.getAttribute("role");
     if (/^(button|link|menuitem|tab|option)$/.test(role || "")) return cur;
-    cur = cur.parentElement; depth++;
+    cur = parentAcrossShadow(cur); depth++;
   }
   return null;
 }
@@ -894,9 +923,9 @@ function xpathHitsClickable(xp) {
     var node = res.singleNodeValue;
     if (!node || node.nodeType !== 1) return false;
     if (isClickable(node)) return true;
-    // clickable ancestor within a few levels
-    var cur = node.parentElement, d = 0;
-    while (cur && d < 4) { if (isClickable(cur)) return true; cur = cur.parentElement; d++; }
+    // clickable ancestor within a few levels (cross shadow)
+    var cur = parentAcrossShadow(node), d = 0;
+    while (cur && d < 6) { if (isClickable(cur)) return true; cur = parentAcrossShadow(cur); d++; }
     // clickable descendant
     if (node.querySelector && node.querySelector("a,button,input,select,textarea,[role='button'],[role='link'],[role='option']"))
       return true;
@@ -928,11 +957,13 @@ function detectKind(el) {
   if (role === "checkbox" || role === "switch") return "checkbox";
   if (role === "radio") return "radio";
   if (role === "option" || el.closest && el.closest("[role='option'],lightning-base-combobox-item")) return "dropdown-option";
-  if (role === "combobox" || (el.closest && el.closest("lightning-combobox,[role='combobox']"))) return "dropdown-trigger";
+  if (role === "combobox" || (el.closest && el.closest("lightning-combobox,lightning-grouped-combobox,[role='combobox']"))) return "dropdown-trigger";
+  if (role === "tab" || (el.closest && el.closest("[role='tab'],lightning-tab"))) return "tab";
+  if (role === "menuitem" || (el.closest && el.closest("[role='menuitem']"))) return "menu-item";
   if (t === "a") return "link";
   if (t === "button" || role === "button") return "button";
   // inside a menu/popover that usually needs hover
-  if (el.closest && el.closest("[role='menu'],[role='menuitem'],.slds-dropdown")) return "hover-click";
+  if (el.closest && el.closest("[role='menu'],.slds-dropdown,.slds-popover")) return "hover-click";
   if (isClickable(el)) return "button";
   return "generic";
 }
@@ -965,6 +996,10 @@ function interactionFor(kind) {
       return { console: "click", java: "if(!el.isSelected()) el.click();" };
     case "hover-click":
       return { console: "hover then click", java: "new Actions(driver).moveToElement(el).click().perform();" };
+    case "tab":
+      return { console: "click the tab", java: "el.click();  // wait for tab panel to load" };
+    case "menu-item":
+      return { console: "open the menu first, then click item", java: "el.click();" };
     case "link":
     case "button":
       return { console: "focus + click", java: "el.click();" };
@@ -1223,7 +1258,7 @@ function bestTarget(el, e) {
 
   if (!isClickable(deep)) {
     var cur = deep, d = 0;
-    while (cur && d < 8) { if (isClickable(cur)) { deep = cur; break; } cur = cur.parentElement; d++; }
+    while (cur && d < 10) { if (isClickable(cur)) { deep = cur; break; } cur = parentAcrossShadow(cur); d++; }
   }
   return deep;
 }
