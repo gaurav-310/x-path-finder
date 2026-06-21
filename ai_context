@@ -1,5 +1,5 @@
 /**
- * Salesforce XPath Finder v10 (clean rebuild)
+ * sSalesforce XPath Finder v10 (clean rebuild)
  *
  * Click any element -> get up to 6 ranked, validated XPath suggestions.
  * Built for Salesforce Lightning (Shadow DOM, dynamic IDs, tables, grids).
@@ -922,8 +922,18 @@ function buildExtract(el, candidates) {
   var pageUrl = "";
   try { pageUrl = (window.location && window.location.href) || ""; } catch (e) {}
 
+  // The finder's own #1 pick — already validated unique + clickable.
+  // This is the XPath the AI should return unless it spots a problem.
+  var bestPick = "";
+  for (var bi = 0; bi < candidates.length; bi++) {
+    if (candidates[bi].count === 1) { bestPick = candidates[bi].xp; break; }
+  }
+  if (!bestPick && candidates.length) bestPick = candidates[0].xp;
+
   return {
     url: pageUrl,
+    targetDescription: describeShort(el),
+    bestXPath: bestPick,
     tag: t,
     kind: kind,
     interaction: interactionFor(kind),
@@ -950,6 +960,10 @@ function extractToText(x) {
   var L = [];
   L.push("=== XPATH EXTRACT (for AI) ===");
   L.push("URL: " + x.url);
+  L.push("");
+  L.push(">> TARGET I CLICKED: " + x.targetDescription);
+  L.push(">> BEST XPATH (already validated unique + clickable): " + x.bestXPath);
+  L.push("");
   L.push("ELEMENT: <" + x.tag + ">  KIND: " + x.kind);
   L.push("INTERACTION: " + x.interaction.console);
   L.push("  Java: " + x.interaction.java);
@@ -987,8 +1001,15 @@ function extractToText(x) {
   L.push("");
   L.push("HTML: " + x.html);
   L.push("");
-  L.push("ASK: Give me the single best, stable XPath for this element,");
-  L.push("plus the interaction function (Console + Selenium Java).");
+  L.push("ASK:");
+  L.push("- I clicked EXACTLY this target element (see TARGET above).");
+  L.push("- Give me the single best, STABLE XPath for THIS element only.");
+  L.push("- This element IS interactable. Do NOT say it is not clickable.");
+  L.push("- Do NOT suggest a different element or alternative approach.");
+  L.push("- Return: (1) the XPath, (2) the interaction function for KIND='" + x.kind + "'");
+  L.push("  in both Console JS and Selenium Java.");
+  L.push("- You may start from BEST XPATH above; only change it if it is");
+  L.push("  not unique or uses a value listed under DYNAMIC_VALUES.");
   L.push("=== END ===");
   return L.join("\n");
 }
