@@ -1,5 +1,5 @@
 /**
- * Salesforce XPath Finder v10 (clean rebuild)
+ * sSalesforce XPath Finder v10 (clean rebuild)
  *
  * Click any element -> get up to 6 ranked, validated XPath suggestions.
  * Built for Salesforce Lightning (Shadow DOM, dynamic IDs, tables, grids).
@@ -198,6 +198,43 @@ function findLabel(el) {
   return el.getAttribute("aria-label") || el.getAttribute("data-label") || "";
 }
 
+// Get the OPTION label for a single radio/checkbox (NOT the group label).
+function optionLabel(el) {
+  function clean(s) { return s ? s.replace(/\s+/g, " ").trim() : ""; }
+
+  // 1. its own label[for=id] (the option text)
+  if (el.id) {
+    try {
+      var root = el.getRootNode && el.getRootNode();
+      var sel = 'label[for="' + CSS.escape(el.id) + '"]';
+      var lbl = (root && root.querySelector && root.querySelector(sel)) ||
+                document.querySelector(sel);
+      if (lbl) {
+        // prefer the text span, skip the faux radio/checkbox span
+        var txtSpan = lbl.querySelector(
+          ".slds-form-element__label,span:not([class*='faux']):not([class*='_faux'])"
+        );
+        var lt = clean((txtSpan && txtSpan.textContent) || lbl.textContent);
+        if (lt) return lt;
+      }
+    } catch (e) {}
+  }
+
+  // 2. sibling label inside the same .slds-radio / .slds-checkbox wrapper
+  var wrap = el.closest(".slds-radio,.slds-checkbox,.slds-button--radio,span,div");
+  if (wrap) {
+    var wl = wrap.querySelector("label .slds-form-element__label,label span:last-child,label");
+    if (wl && clean(wl.textContent)) return clean(wl.textContent);
+  }
+
+  // 3. immediate next/prev sibling label
+  var sib = el.nextElementSibling || el.previousElementSibling;
+  if (sib && tagOf(sib) === "label" && clean(sib.textContent)) return clean(sib.textContent);
+
+  // 4. value or aria-label as last resort
+  return el.getAttribute("aria-label") || el.getAttribute("value") || "";
+}
+
 // Clean header text — strip sort arrows, counts, nested controls
 function cleanHeaderText(headerEl) {
   if (!headerEl) return "";
@@ -295,13 +332,40 @@ function gen(rawEl) {
   }
 
   // ---------- Radio / checkbox ----------
-  if (t === "input" && el.type === "radio") {
-    var rl = findLabel(el);
-    if (rl) r.push("//span[text()=" + wq(rl) + "]/ancestor::label//input[@type='radio']");
-  }
-  if (t === "input" && el.type === "checkbox") {
-    var cl = findLabel(el);
-    if (cl) r.push("//span[text()=" + wq(cl) + "]/ancestor::label//input[@type='checkbox']");
+  if (t === "input" && (el.type === "radio" || el.type === "checkbox")) {
+    var inType = el.type;            // radio | checkbox
+    var optLbl = optionLabel(el);    // THIS option's own label (not group)
+    var val = el.getAttribute("value");
+    var grp = closestAcrossShadow(el,
+      "lightning-radio-group,lightning-checkbox-group,fieldset," +
+      ".slds-form-element");
+    var grpLbl = grp ? findLabel(grp) : "";
+
+    // 1. by value (very stable for radios in Salesforce)
+    if (val && !looksDynamic(val))
+      r.push("//input[@type='" + inType + "' and @value=" + wq(val) + "]");
+
+    // 2. by this option's own label text (SLDS: input is sibling of label)
+    if (optLbl && optLbl.length < 60 && !looksDynamic(optLbl)) {
+      r.push("//label[normalize-space()=" + wq(optLbl) +
+             "]/preceding-sibling::input[@type='" + inType + "']");
+      r.push("//*[normalize-space()=" + wq(optLbl) +
+             "]/ancestor::label/preceding-sibling::input[@type='" + inType + "']");
+      r.push("//span[contains(@class,'slds-" + inType + "')]" +
+             "[.//*[normalize-space()=" + wq(optLbl) + "]]//input");
+      // group + option (most precise)
+      if (grp && grpLbl && !looksDynamic(grpLbl)) {
+        var grpTag = tagOf(grp);
+        r.push("//" + (grpTag.indexOf("-") > 0 ? grpTag : "*") +
+               "[.//*[normalize-space()=" + wq(grpLbl) + "]]" +
+               "//label[normalize-space()=" + wq(optLbl) +
+               "]/preceding-sibling::input");
+      }
+    }
+
+    // 3. label[for] if id is stable
+    if (el.id && !isFlakyId(el.id))
+      r.push("//label[@for='" + el.id + "']/preceding-sibling::input");
   }
 
   // ---------- Input / textarea / select via wrappers + label ----------
@@ -731,6 +795,10 @@ function rankAndPick(rawList, el) {
     if (/@placeholder=/.test(xp)) s -= 12;               // user-visible, stable
     // Heading-following anchors are bad for inputs — penalize hard
     if (/\/\/h[1-6]\[.*following::(input|textarea|select)/.test(xp)) s += 70;
+    // Radio/checkbox: value-based and option-label-scoped are best
+    if (/@type='(radio|checkbox)' and @value=/.test(xp)) s -= 30;
+    if (/slds-(radio|checkbox)'\)\]\[\.\/\//.test(xp)) s -= 26;
+    if (/\/preceding-sibling::input/.test(xp)) s -= 14;
     // penalize dynamic-looking quoted values
     (xp.match(/'([^']+)'/g) || []).forEach(function (q) {
       if (looksDynamic(q.slice(1, -1))) s += 80;
@@ -1147,11 +1215,44 @@ function bestTarget(el, e) {
   }
   var t = tagOf(deep);
   if (SVG_TAGS.test(t)) { deep = walkUpToClickable(deep); t = tagOf(deep); }
+
+  // Radio/checkbox: if the click landed on the label, faux box, or text
+  // span, resolve to the actual <input> for that single option.
+  var radioInput = resolveRadioInput(deep);
+  if (radioInput) return radioInput;
+
   if (!isClickable(deep)) {
     var cur = deep, d = 0;
     while (cur && d < 8) { if (isClickable(cur)) { deep = cur; break; } cur = cur.parentElement; d++; }
   }
   return deep;
+}
+
+// If el is (or is inside) a radio/checkbox option's label/wrapper,
+// return that option's <input>. Otherwise null.
+function resolveRadioInput(el) {
+  if (!el || el.nodeType !== 1) return null;
+  // already the input
+  if (tagOf(el) === "input" && /^(radio|checkbox)$/.test(el.type)) return el;
+  // a label[for] pointing at a radio/checkbox
+  if (tagOf(el) === "label" || el.closest) {
+    var lbl = (tagOf(el) === "label") ? el : el.closest("label");
+    if (lbl && lbl.getAttribute("for")) {
+      try {
+        var root = el.getRootNode && el.getRootNode();
+        var byId = (root && root.getElementById && root.getElementById(lbl.getAttribute("for"))) ||
+                   document.getElementById(lbl.getAttribute("for"));
+        if (byId && tagOf(byId) === "input" && /^(radio|checkbox)$/.test(byId.type)) return byId;
+      } catch (e) {}
+    }
+  }
+  // inside a .slds-radio / .slds-checkbox wrapper -> its input
+  var wrap = el.closest && el.closest(".slds-radio,.slds-checkbox,.slds-button--radio");
+  if (wrap) {
+    var inp = wrap.querySelector("input[type='radio'],input[type='checkbox']");
+    if (inp) return inp;
+  }
+  return null;
 }
 
 // ====================== hover highlight ======================
