@@ -124,29 +124,77 @@ function isClickable(el) {
   return false;
 }
 
-// Find the label text for an input/field
+// Walk up the DOM, jumping across shadow boundaries (host elements).
+function closestAcrossShadow(el, selector) {
+  var cur = el;
+  while (cur) {
+    if (cur.nodeType === 1 && cur.matches && cur.matches(selector)) return cur;
+    if (cur.parentElement) { cur = cur.parentElement; continue; }
+    var root = cur.getRootNode && cur.getRootNode();
+    cur = (root && root.host) ? root.host : null;
+  }
+  return null;
+}
+
+// Find the label text for an input/field — shadow-DOM aware.
 function findLabel(el) {
+  function clean(s) { return s ? s.replace(/\s+/g, " ").trim() : ""; }
+
+  // 1. label[for=id] — search the element's own root (shadow or document)
   if (el.id) {
     try {
-      var lbl = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+      var root = el.getRootNode && el.getRootNode();
+      var sel = 'label[for="' + CSS.escape(el.id) + '"]';
+      var lbl = (root && root.querySelector && root.querySelector(sel)) ||
+                document.querySelector(sel);
       if (lbl) {
         var s = lbl.querySelector("span");
-        return (s && s.textContent.trim()) || lbl.textContent.trim();
+        var lt = clean((s && s.textContent) || lbl.textContent);
+        if (lt) return lt;
       }
     } catch (e) {}
   }
-  var w = el.closest(
+
+  // 2. aria-labelledby -> referenced element's text
+  var alb = el.getAttribute && el.getAttribute("aria-labelledby");
+  if (alb) {
+    try {
+      var rootA = el.getRootNode && el.getRootNode();
+      var id0 = alb.split(/\s+/)[0];
+      var refEl = (rootA && rootA.getElementById && rootA.getElementById(id0)) ||
+                  document.getElementById(id0);
+      var rt = clean(refEl && refEl.textContent);
+      if (rt) return rt;
+    } catch (e) {}
+  }
+
+  // 3. a <label> in the SAME shadow root (only when it's a real shadow
+  //    root — scoping to that input's shadow keeps it correct).
+  try {
+    var r = el.getRootNode && el.getRootNode();
+    if (r && r !== document && r.host && r.querySelector) {
+      var anyLbl = r.querySelector("label,.slds-form-element__label,legend");
+      if (anyLbl) {
+        var alt = clean(anyLbl.textContent);
+        if (alt) return alt;
+      }
+    }
+  } catch (e) {}
+
+  // 4. walk up across shadow hosts to a form wrapper, read its label
+  var w = closestAcrossShadow(el,
     "label,.slds-form-element,lightning-input,lightning-combobox," +
     "lightning-checkbox-group,lightning-radio-group,lightning-textarea," +
-    "lightning-datepicker,lightning-input-field,lightning-select"
+    "lightning-datepicker,lightning-input-field,lightning-select,lightning-picklist"
   );
   if (w) {
     var wl = w.querySelector(
       "span.slds-form-element__label,label span,legend span,label," +
       ".slds-form-element__legend"
     );
-    if (wl && wl.textContent.trim()) return wl.textContent.trim();
+    if (wl && clean(wl.textContent)) return clean(wl.textContent);
   }
+
   return el.getAttribute("aria-label") || el.getAttribute("data-label") || "";
 }
 
@@ -316,16 +364,25 @@ function gen(rawEl) {
     var al = el.getAttribute("aria-label");
     if (al && !looksDynamic(al)) r.push("//" + t + "[@aria-label=" + wq(al) + "]");
 
-    // 9. Lightning host element (lightning-input / -textarea / -combobox)
-    var lwcHost = el.closest("lightning-input,lightning-textarea," +
-      "lightning-combobox,lightning-input-field,lightning-picklist");
+    // 9. Lightning host element — search ACROSS shadow boundaries
+    //    (the input is often inside lightning-primitive-input-simple's
+    //     shadow root, nested inside lightning-input).
+    var lwcHost = closestAcrossShadow(el, "lightning-input,lightning-textarea," +
+      "lightning-combobox,lightning-input-field,lightning-picklist," +
+      "lightning-grouped-combobox,lightning-dual-listbox");
     if (lwcHost) {
       var hostTag = tagOf(lwcHost);
       var hid = lwcHost.getAttribute("data-id");
       if (hid && !looksDynamic(hid))
         r.push("//" + hostTag + "[@data-id=" + wq(hid) + "]//" + t);
-      if (lblTxt && lblTxt.length < 60 && !looksDynamic(lblTxt))
+      var hfn = lwcHost.getAttribute("field-name") || lwcHost.getAttribute("data-field");
+      if (hfn && !looksDynamic(hfn))
+        r.push("//" + hostTag + "[@field-name=" + wq(hfn) + "]//" + t);
+      if (lblTxt && lblTxt.length < 60 && !looksDynamic(lblTxt)) {
+        // MOST RELIABLE for shadow-nested inputs: host scoped by its label
         r.push("//" + hostTag + "[.//label[normalize-space()=" + wq(lblTxt) + "]]//" + t);
+        r.push("//" + hostTag + "[.//label[contains(normalize-space()," + wq(lblTxt) + ")]]//" + t);
+      }
     }
   }
 
@@ -488,7 +545,10 @@ function appendNeighborXPaths(el, t, txt, r) {
     }
   }
 
-  // nearest heading in the surrounding section
+  // Heading anchor — ONLY for non-form elements. A form field must be
+  // anchored by its own label, never by the form/section heading.
+  if (/^(input|textarea|select)$/.test(t)) return;
+
   var section = el.closest("section,article,fieldset,.slds-section,.slds-card,[role='region']");
   if (section) {
     var h = section.querySelector("h1,h2,h3,h4,h5,h6,.slds-section__title,.slds-card__header-title");
@@ -664,10 +724,13 @@ function rankAndPick(rawList, el) {
     if (/\/parent::(a|button)/.test(xp)) s -= 12;
     if (/\sand\s/.test(xp) && (xp.match(/=/g) || []).length >= 2) s -= 15; // combination
     // Salesforce form-field strategies (very reliable for inputs)
+    if (/lightning-[a-z-]+\[\.\/\/label.*\/\/(input|textarea|select)/.test(xp)) s -= 34; // host scoped by label (best for shadow)
     if (/slds-form-element.*\/\/(input|textarea|select)/.test(xp)) s -= 28;
     if (/@field-name=|@data-field=/.test(xp)) s -= 30;   // record-form field
     if (/@data-label=.*\/\/(input|textarea|select)/.test(xp)) s -= 24;
     if (/@placeholder=/.test(xp)) s -= 12;               // user-visible, stable
+    // Heading-following anchors are bad for inputs — penalize hard
+    if (/\/\/h[1-6]\[.*following::(input|textarea|select)/.test(xp)) s += 70;
     // penalize dynamic-looking quoted values
     (xp.match(/'([^']+)'/g) || []).forEach(function (q) {
       if (looksDynamic(q.slice(1, -1))) s += 80;
