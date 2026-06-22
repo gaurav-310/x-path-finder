@@ -46,6 +46,9 @@ public void i_open_dropdown_and_select_option_number(String dropdownXpath, Strin
 
 ### `StepDefinitionHelperWeb.java`
 
+Send the keys **straight to the dropdown element** — this is the simplest form and
+uses real (trusted) browser key events, which Lightning honors.
+
 ```java
 public void selectDropdownOptionByPosition(String dropdownXpath, String optionNo) throws Exception {
     WebDriver driver = DriverManagerThreadSafe.getDriver();
@@ -56,14 +59,13 @@ public void selectDropdownOptionByPosition(String dropdownXpath, String optionNo
     dropdown.click();
     Thread.sleep(800);
 
-    // 2. Move the highlight down N times, then select with Enter
+    // 2. Arrow Down N times, then Enter — sent directly to the dropdown
     int pos = Integer.parseInt(optionNo.trim());
-    Actions actions = new Actions(driver);
     for (int i = 0; i < pos; i++) {
-        actions.sendKeys(Keys.ARROW_DOWN);
+        dropdown.sendKeys(Keys.ARROW_DOWN);
+        Thread.sleep(150);
     }
-    actions.sendKeys(Keys.ENTER);
-    actions.build().perform();
+    dropdown.sendKeys(Keys.ENTER);
     Thread.sleep(800);
 }
 ```
@@ -79,7 +81,6 @@ import org.openqa.selenium.By;
 import org.openqa.selenium.Keys;
 import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.WebElement;
-import org.openqa.selenium.interactions.Actions;
 import org.openqa.selenium.support.ui.WebDriverWait;
 import org.openqa.selenium.support.ui.ExpectedConditions;
 ```
