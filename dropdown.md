@@ -1,13 +1,18 @@
 # Dropdown → Select Option by Position (Keyboard)
 
-Open a dropdown and pick an option **by its number** (1‑based), passing only **two values**:
+Open a dropdown and pick an option **by its number** (1‑based).
 
 | Input | Meaning | Example |
 |-------|---------|---------|
-| `dropdownXpath` | XPath of the dropdown trigger | `//button[@aria-label='Select Address' and @role='combobox']` |
-| `optionNo`      | Which option to pick (1‑based) | `2` |
+| `optionNo` | Which option to pick (1‑based) | `2` |
+| `field`    | Field key in the object file (its value = the dropdown XPath) | `addressDropdown` |
+| `screenName` | Screen name in the object file | `SubmitLoanReferral` |
 
-**How it works:** open the dropdown → press **Arrow Down × N** → press **Enter**.
+The dropdown **XPath is stored in the object/locator file** and fetched at runtime via
+`genGetLocator(field, screenName)` — so the Gherkin only passes the field + screen, never
+the raw XPath. (The console script below still uses a raw XPath, just for quick testing.)
+
+**How it works:** open the dropdown → press **Arrow Down × (N‑1)** → press **Enter**.
 
 No searching for option elements, so Salesforce shadow DOM doesn't matter. The keys are
 sent **directly to the combobox element**, which is what makes Lightning respond.
@@ -16,36 +21,49 @@ sent **directly to the combobox element**, which is what makes Lightning respond
 
 ## 1. Step Definition (Cucumber + Selenium)
 
+> **XPath lives in the object/locator file.** The Gherkin passes the **field name**
+> and **screen name** (not the raw XPath). The helper looks up the XPath via
+> `genGetLocator(field, screenName)` — exactly like your other web steps.
+
 ### Feature file
 
 ```gherkin
-And I open dropdown "//button[@aria-label='Select Address' and @role='combobox']" and select option number "2"
+And I select option number "2" from "addressDropdown" dropdown on "SubmitLoanReferral" screen
 ```
+
+- `"2"` → option number (1‑based)
+- `"addressDropdown"` → the field key in your object file (whose value is the XPath)
+- `"SubmitLoanReferral"` → the screen name
 
 ### `StepDefinition.java`
 
 ```java
-@Then("^I open dropdown \"(.*?)\" and select option number \"(.*?)\"$")
-public void i_open_dropdown_and_select_option_number(String dropdownXpath, String optionNo) throws Exception {
-    stepDefinitionHelperWebClassInstance.selectDropdownOptionByPosition(dropdownXpath, optionNo);
+@Then("^I select option number \"(.*?)\" from \"(.*?)\" dropdown on \"(.*?)\" screen$")
+public void i_select_option_number_from_dropdown_on_screen(String optionNo, String field, String screenName) throws Exception {
+    stepDefinitionHelperWebClassInstance.selectDropdownOptionByPosition(optionNo, field, screenName);
 }
 ```
 
 ### `StepDefinitionHelperWeb.java`
 
-Keys are sent straight to the dropdown element via WebDriver (real, trusted key events).
+XPath is read from the object file; keys are sent straight to the dropdown element
+via WebDriver (real, trusted key events).
 
 ```java
-public void selectDropdownOptionByPosition(String dropdownXpath, String optionNo) throws Exception {
+public void selectDropdownOptionByPosition(String optionNo, String field, String screenName) throws Exception {
+    // 1. Get the dropdown XPath from the object/locator file
+    String[] objectPropertyArray = this.genGetLocator(field, screenName);
+    String dropdownXpath = objectPropertyArray[1];
+
     WebDriver driver = DriverManagerThreadSafe.getDriver();
     WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(20));
 
-    // 1. Open the dropdown
+    // 2. Open the dropdown
     WebElement dropdown = wait.until(ExpectedConditions.elementToBeClickable(By.xpath(dropdownXpath)));
     dropdown.click();
     Thread.sleep(800);
 
-    // 2. Arrow Down (N-1) times, then Enter.
+    // 3. Arrow Down (N-1) times, then Enter.
     //    The combobox pre-highlights option 1 on open, so option N needs N-1 presses.
     int pos = Integer.parseInt(optionNo.trim());
     for (int i = 0; i < pos - 1; i++) {
@@ -141,8 +159,8 @@ press. If it stops one short or one past your target, adjust the `optionNo - 1` 
 
 | Step Definition (Java) | Console Script (JS) |
 |------------------------|---------------------|
-| `dropdownXpath` (1st arg) | `dropdownXpath` variable |
-| `optionNo` (2nd arg) | `optionNo` variable |
+| XPath from `genGetLocator(field, screenName)` | `dropdownXpath` variable (typed in for testing) |
+| `optionNo` arg | `optionNo` variable |
 | `dropdown.click()` | `clickEl(dd)` |
 | `dropdown.sendKeys(Keys.ARROW_DOWN)` × (N-1) | `triggerKey(dd, "ArrowDown")` × (N-1) |
 | `dropdown.sendKeys(Keys.ENTER)` | `triggerKey(dd, "Enter")` |
