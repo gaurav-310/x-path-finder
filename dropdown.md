@@ -1,26 +1,38 @@
 # Dropdown → Select Option by Position
 
-A reusable way to open a dropdown and click an option **by its number** (1‑based),
-passing only **two values**:
+Open a dropdown and pick an option **by its number** (1‑based), passing only **two values**:
 
 | Input | Meaning | Example |
 |-------|---------|---------|
-| `dropdownXpath` | XPath of the dropdown trigger | `//button[@aria-label='Status']` |
-| `optionNo`      | Which option to click (1‑based) | `2` |
-
-**What it does:** clicks the dropdown to open it → clicks the option at the given position.
-
-The option locator is built as `(//*[@role='option'])[N]` — exactly the
-position‑based XPath the **XPath Finder** suggests, so the two stay in sync.
+| `dropdownXpath` | XPath of the dropdown trigger | `//button[@aria-label='Select Address' and @role='combobox']` |
+| `optionNo`      | Which option to pick (1‑based) | `2` |
 
 ---
 
-## 1. Step Definition (Cucumber + Selenium)
+## Two ways to do it
 
-### Feature file usage
+| Method | How it works | Reliability on Salesforce |
+|--------|--------------|---------------------------|
+| **A. Keyboard (recommended)** | Open dropdown → press **Arrow Down × N** → **Enter** | **Best.** No DOM searching, so shadow DOM doesn't matter. |
+| **B. Click the option** | Open dropdown → find the Nth `role="option"` → click it | Works, but options live in shadow DOM and can be hard to find. |
+
+> **Why keyboard is better:** Salesforce renders dropdown options inside (synthetic/native)
+> shadow DOM. Searching for them with `querySelector` fails, and even XPath can miss
+> native shadow. Keyboard navigation sidesteps all of that — you just move the highlight
+> and press Enter.
+
+---
+
+# Method A — Keyboard (recommended)
+
+**Idea:** open → `ArrowDown` N times (each press moves the highlight down one) → `Enter`.
+
+## A1. Step Definition (Cucumber + Selenium)
+
+### Feature file
 
 ```gherkin
-And I open dropdown "//button[@aria-label='Status']" and select option number "2"
+And I open dropdown "//button[@aria-label='Select Address' and @role='combobox']" and select option number "2"
 ```
 
 ### `StepDefinition.java`
@@ -34,136 +46,176 @@ public void i_open_dropdown_and_select_option_number(String dropdownXpath, Strin
 
 ### `StepDefinitionHelperWeb.java`
 
-> **Scoped to the right dropdown.** When the screen has more than one dropdown,
-> a plain `(//*[@role='option'])[N]` counts options across **every** open
-> listbox and can land in the wrong one. So after opening the dropdown we read
-> its `aria-controls` (the id of *its own* listbox) and look for the option
-> only inside that listbox.
-
 ```java
 public void selectDropdownOptionByPosition(String dropdownXpath, String optionNo) throws Exception {
     WebDriver driver = DriverManagerThreadSafe.getDriver();
     WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(20));
 
-    // 1. Click the dropdown to open it
+    // 1. Open the dropdown
+    WebElement dropdown = wait.until(ExpectedConditions.elementToBeClickable(By.xpath(dropdownXpath)));
+    dropdown.click();
+    Thread.sleep(800);
+
+    // 2. Move the highlight down N times, then select with Enter
+    int pos = Integer.parseInt(optionNo.trim());
+    Actions actions = new Actions(driver);
+    for (int i = 0; i < pos; i++) {
+        actions.sendKeys(Keys.ARROW_DOWN);
+    }
+    actions.sendKeys(Keys.ENTER);
+    actions.build().perform();
+    Thread.sleep(800);
+}
+```
+
+> **Off by one?** If it lands one above/below the option you wanted, change the loop to
+> `i <= pos` or `i < pos - 1`. Some comboboxes pre‑highlight the first option on open.
+
+### Imports
+
+```java
+import java.time.Duration;
+import org.openqa.selenium.By;
+import org.openqa.selenium.Keys;
+import org.openqa.selenium.WebDriver;
+import org.openqa.selenium.WebElement;
+import org.openqa.selenium.interactions.Actions;
+import org.openqa.selenium.support.ui.WebDriverWait;
+import org.openqa.selenium.support.ui.ExpectedConditions;
+```
+
+## A2. Console Test Script (keyboard)
+
+> Note: the browser console fires **synthetic** key events (`isTrusted=false`), which
+> Lightning sometimes ignores. So this console preview may not always drive the keyboard
+> navigation — but the **Selenium step above sends real keys and works**. Use the console
+> script mainly to confirm the dropdown opens.
+
+```javascript
+(function () {
+  // ===== EDIT THESE TWO =====
+  var dropdownXpath = "//button[@aria-label='Select Address' and @role='combobox']";
+  var optionNo = 2;   // 1-based
+  // ==========================
+
+  function xpOne(p){return document.evaluate(p,document,null,XPathResult.FIRST_ORDERED_NODE_TYPE,null).singleNodeValue;}
+  function key(el, k, code, kc){
+    ["keydown","keypress","keyup"].forEach(function(t){
+      el.dispatchEvent(new KeyboardEvent(t,{key:k,code:code,keyCode:kc,which:kc,bubbles:true,cancelable:true}));
+    });
+  }
+
+  var dd = xpOne(dropdownXpath);
+  if(!dd){ console.error("Dropdown NOT found:", dropdownXpath); return; }
+  dd.scrollIntoView({block:"center"});
+  dd.focus();
+  dd.click();                         // open
+  console.log("Opened. Sending ArrowDown x" + optionNo + " then Enter...");
+
+  setTimeout(function(){
+    var target = document.activeElement || dd;
+    for (var i = 0; i < optionNo; i++) key(target, "ArrowDown", "ArrowDown", 40);
+    setTimeout(function(){
+      key(target, "Enter", "Enter", 13);
+      console.log("Done (if nothing changed, the console's synthetic keys were ignored — the Selenium step will still work).");
+    }, 250);
+  }, 600);
+})();
+```
+
+---
+
+# Method B — Click the option (fallback)
+
+Use this only if keyboard navigation isn't an option. It opens the dropdown, scopes to
+*that* dropdown's own listbox (via `aria-controls`), and clicks the Nth option.
+
+## B1. `StepDefinitionHelperWeb.java`
+
+```java
+public void selectDropdownOptionByPositionClick(String dropdownXpath, String optionNo) throws Exception {
+    WebDriver driver = DriverManagerThreadSafe.getDriver();
+    WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(20));
+
     WebElement dropdown = wait.until(ExpectedConditions.elementToBeClickable(By.xpath(dropdownXpath)));
     dropdown.click();
     Thread.sleep(1000);
 
-    // 2. Find THIS dropdown's own listbox (aria-controls points to its id)
+    // scope to THIS dropdown's listbox
     String listboxId = dropdown.getAttribute("aria-controls");
     if (listboxId == null || listboxId.isEmpty()) {
-        // the attribute may sit on an inner input instead of the clicked element
         try {
             listboxId = dropdown.findElement(By.xpath(".//*[@aria-controls]")).getAttribute("aria-controls");
-        } catch (Exception ignore) { /* fall through to container scope */ }
+        } catch (Exception ignore) {}
     }
+    String optionXpath = (listboxId != null && !listboxId.isEmpty())
+        ? "(//*[@id='" + listboxId + "']//*[@role='option'])[" + optionNo + "]"
+        : "(" + dropdownXpath + "/ancestor-or-self::*[contains(@class,'slds-combobox') or @role='combobox'][1]//*[@role='option'])[" + optionNo + "]";
 
-    // 3. Build an option XPath scoped to this dropdown only
-    String optionXpath;
-    if (listboxId != null && !listboxId.isEmpty()) {
-        optionXpath = "(//*[@id='" + listboxId + "']//*[@role='option'])[" + optionNo + "]";
-    } else {
-        // fallback: scope to the combobox container that holds the trigger
-        optionXpath = "(" + dropdownXpath +
-            "/ancestor-or-self::*[contains(@class,'slds-combobox') or @role='combobox'][1]" +
-            "//*[@role='option'])[" + optionNo + "]";
-    }
-
-    // 4. Click the option at the given position
     WebElement option = wait.until(ExpectedConditions.elementToBeClickable(By.xpath(optionXpath)));
     option.click();
     Thread.sleep(1000);
 }
 ```
 
-### Imports (add if missing)
-
-```java
-import java.time.Duration;
-import org.openqa.selenium.By;
-import org.openqa.selenium.WebDriver;
-import org.openqa.selenium.WebElement;
-import org.openqa.selenium.support.ui.WebDriverWait;
-import org.openqa.selenium.support.ui.ExpectedConditions;
-```
-
----
-
-## 2. Console Test Script
-
-Paste this into the browser **DevTools Console**. Edit the two values at the top,
-then press Enter. It performs the **same** open‑then‑click‑by‑position behavior so
-you can verify before wiring it into a test.
+## B2. Console Test Script (click)
 
 ```javascript
 (function () {
-  // ===== EDIT THESE TWO =====
-  var dropdownXpath = "PASTE_DROPDOWN_XPATH_HERE";
-  var optionNo = 2;   // which option to click (1-based)
-  // ==========================
+  var dropdownXpath = "//button[@aria-label='Select Address' and @role='combobox']";
+  var optionNo = 2;
+  var MAX_WAIT_MS = 4000, STEP = 200;
 
-  function xp(p) {
-    return document.evaluate(p, document, null,
-      XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+  function xpOne(p){return document.evaluate(p,document,null,XPathResult.FIRST_ORDERED_NODE_TYPE,null).singleNodeValue;}
+  function visible(el){var r=el.getBoundingClientRect();return r.width>0&&r.height>0&&getComputedStyle(el).visibility!=="hidden";}
+  function clickEl(el){
+    ["pointerdown","mousedown","pointerup","mouseup","click"].forEach(function(t){
+      el.dispatchEvent(new MouseEvent(t,{bubbles:true,cancelable:true,view:window}));
+    });
   }
-  function visible(el) { var r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; }
-  function clickEl(el) {
-    el.scrollIntoView({ block: "center" });
-    el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
-    el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
-    el.click();
+  // collect options via XPath (synthetic shadow) AND shadow-root walk (native shadow)
+  function collectOptions(){
+    var out=[];
+    try{
+      var s=document.evaluate("//*[@role='option'] | //lightning-base-combobox-item",
+        document,null,XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,null);
+      for(var i=0;i<s.snapshotLength;i++) out.push(s.snapshotItem(i));
+    }catch(e){}
+    (function walk(root){
+      var els=root.querySelectorAll?root.querySelectorAll("*"):[];
+      for(var i=0;i<els.length;i++){
+        var el=els[i], role=el.getAttribute&&el.getAttribute("role");
+        var isOpt = role==="option" || (el.tagName&&el.tagName.toLowerCase()==="lightning-base-combobox-item");
+        if(isOpt && out.indexOf(el)<0) out.push(el);
+        if(el.shadowRoot) walk(el.shadowRoot);
+      }
+    })(document);
+    return out;
   }
 
-  var dd = xp(dropdownXpath);
-  if (!dd) { console.error("Dropdown NOT found:", dropdownXpath); return; }
+  var dd=xpOne(dropdownXpath);
+  if(!dd){console.error("Dropdown NOT found:",dropdownXpath);return;}
   console.log("Opening dropdown...");
   clickEl(dd);
 
-  // options render async, so wait a moment before clicking
-  setTimeout(function () {
-    // find the listbox that belongs to THIS dropdown (handles multiple dropdowns)
-    var listbox = null;
-    var controls = dd.getAttribute && dd.getAttribute("aria-controls");
-    if (!controls) {
-      var inner = dd.querySelector && dd.querySelector("[aria-controls]");
-      if (inner) controls = inner.getAttribute("aria-controls");
+  var waited=0;
+  (function poll(){
+    var opts=collectOptions().filter(visible);
+    if(opts.length){
+      console.log("Visible options ("+opts.length+"):", opts.map(function(o){return o.textContent.trim();}));
+      var opt=opts[optionNo-1];
+      if(!opt){console.error("Only "+opts.length+" options; #"+optionNo+" doesn't exist.");return;}
+      console.log("Clicking #"+optionNo+" -> \""+opt.textContent.trim()+"\"");
+      clickEl(opt);
+      console.log("Done.");
+      return;
     }
-    if (controls) listbox = document.getElementById(controls);
-    if (!listbox) {
-      var box = dd.closest("lightning-combobox,lightning-base-combobox,lightning-grouped-combobox,.slds-combobox,[role='combobox']");
-      if (box) listbox = box.querySelector("[role='listbox']") || box;
-    }
-    if (!listbox) {
-      // last resort: the visible listbox currently on screen
-      var boxes = Array.prototype.slice.call(document.querySelectorAll("[role='listbox']")).filter(visible);
-      listbox = boxes[boxes.length - 1] || document;
-    }
-
-    var opts = Array.prototype.slice
-      .call(listbox.querySelectorAll("[role='option'],lightning-base-combobox-item"))
-      .filter(visible);
-    console.log("Options in THIS dropdown:", opts.length);
-
-    var opt = opts[optionNo - 1];
-    if (!opt) { console.error("Option #" + optionNo + " NOT found (only " + opts.length + ")."); return; }
-    console.log("Clicking option #" + optionNo + " -> \"" + opt.textContent.trim() + "\"");
-    clickEl(opt);
-    console.log("Done.");
-  }, 800);
+    waited+=STEP;
+    if(waited>=MAX_WAIT_MS){console.error("No options appeared after "+MAX_WAIT_MS+"ms - dropdown likely didn't open.");return;}
+    setTimeout(poll,STEP);
+  })();
 })();
 ```
-
----
-
-## How the two map together
-
-| Step Definition | Console Script |
-|-----------------|----------------|
-| `dropdownXpath` (1st arg) | `dropdownXpath` variable |
-| `optionNo` (2nd arg) | `optionNo` variable |
-| scope by `aria-controls` listbox id | scope by `aria-controls` → `getElementById` |
-| `dropdown.click()` then `option.click()` | `clickEl(dd)` then `clickEl(opt)` |
 
 ---
 
@@ -171,8 +223,9 @@ you can verify before wiring it into a test.
 
 | Problem | Fix |
 |---------|-----|
-| **Two dropdowns → wrong one selected** | Already handled: options are scoped to the opened dropdown's own `aria-controls` listbox. Just make sure `dropdownXpath` uniquely points to the **correct** trigger (verify with the XPath Finder — it should say `unique`). |
-| Options aren't `role='option'` (rare in Lightning) | The console script already also matches `lightning-base-combobox-item`. For Java, change `//*[@role='option']` to `//lightning-base-combobox-item`. |
-| Option clicks too early / not found | Increase the console `setTimeout` from `800` ms, or the Java `Duration.ofSeconds(20)` wait |
-| Dropdown doesn't open | Confirm `dropdownXpath` is the **clickable trigger** (use the XPath Finder's `[clickable]` badge) |
-| Wrong option selected | Remember `optionNo` is **1‑based** — the first option is `1`, not `0` |
+| Keyboard lands on wrong option (off by one) | Change the loop to `i <= pos` or `i < pos - 1` (depends on whether the combobox pre‑highlights option 1 on open) |
+| Console keyboard preview does nothing | Expected — synthetic key events are often ignored. The **Selenium** step (real keys) still works. |
+| Method B shows **0 options** | Options are in shadow DOM. Prefer **Method A (keyboard)**. The Method B console script already walks shadow roots + uses XPath. |
+| Two dropdowns → wrong one | Make sure `dropdownXpath` is **unique** (verify with the XPath Finder — it should say `unique`). Keyboard method only acts on the dropdown you opened/focused. |
+| Dropdown doesn't open | Confirm `dropdownXpath` is the **clickable trigger** (XPath Finder shows `[clickable]`) |
+| `optionNo` indexing | It's **1‑based** — first option is `1`, not `0` |
