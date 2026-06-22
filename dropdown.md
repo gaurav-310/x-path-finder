@@ -34,6 +34,12 @@ public void i_open_dropdown_and_select_option_number(String dropdownXpath, Strin
 
 ### `StepDefinitionHelperWeb.java`
 
+> **Scoped to the right dropdown.** When the screen has more than one dropdown,
+> a plain `(//*[@role='option'])[N]` counts options across **every** open
+> listbox and can land in the wrong one. So after opening the dropdown we read
+> its `aria-controls` (the id of *its own* listbox) and look for the option
+> only inside that listbox.
+
 ```java
 public void selectDropdownOptionByPosition(String dropdownXpath, String optionNo) throws Exception {
     WebDriver driver = DriverManagerThreadSafe.getDriver();
@@ -44,8 +50,27 @@ public void selectDropdownOptionByPosition(String dropdownXpath, String optionNo
     dropdown.click();
     Thread.sleep(1000);
 
-    // 2. Click the option at the given position
-    String optionXpath = "(//*[@role='option'])[" + optionNo + "]";
+    // 2. Find THIS dropdown's own listbox (aria-controls points to its id)
+    String listboxId = dropdown.getAttribute("aria-controls");
+    if (listboxId == null || listboxId.isEmpty()) {
+        // the attribute may sit on an inner input instead of the clicked element
+        try {
+            listboxId = dropdown.findElement(By.xpath(".//*[@aria-controls]")).getAttribute("aria-controls");
+        } catch (Exception ignore) { /* fall through to container scope */ }
+    }
+
+    // 3. Build an option XPath scoped to this dropdown only
+    String optionXpath;
+    if (listboxId != null && !listboxId.isEmpty()) {
+        optionXpath = "(//*[@id='" + listboxId + "']//*[@role='option'])[" + optionNo + "]";
+    } else {
+        // fallback: scope to the combobox container that holds the trigger
+        optionXpath = "(" + dropdownXpath +
+            "/ancestor-or-self::*[contains(@class,'slds-combobox') or @role='combobox'][1]" +
+            "//*[@role='option'])[" + optionNo + "]";
+    }
+
+    // 4. Click the option at the given position
     WebElement option = wait.until(ExpectedConditions.elementToBeClickable(By.xpath(optionXpath)));
     option.click();
     Thread.sleep(1000);
@@ -82,6 +107,7 @@ you can verify before wiring it into a test.
     return document.evaluate(p, document, null,
       XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
   }
+  function visible(el) { var r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; }
   function clickEl(el) {
     el.scrollIntoView({ block: "center" });
     el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
@@ -96,9 +122,31 @@ you can verify before wiring it into a test.
 
   // options render async, so wait a moment before clicking
   setTimeout(function () {
-    var optionXpath = "(//*[@role='option'])[" + optionNo + "]";
-    var opt = xp(optionXpath);
-    if (!opt) { console.error("Option #" + optionNo + " NOT found:", optionXpath); return; }
+    // find the listbox that belongs to THIS dropdown (handles multiple dropdowns)
+    var listbox = null;
+    var controls = dd.getAttribute && dd.getAttribute("aria-controls");
+    if (!controls) {
+      var inner = dd.querySelector && dd.querySelector("[aria-controls]");
+      if (inner) controls = inner.getAttribute("aria-controls");
+    }
+    if (controls) listbox = document.getElementById(controls);
+    if (!listbox) {
+      var box = dd.closest("lightning-combobox,lightning-base-combobox,lightning-grouped-combobox,.slds-combobox,[role='combobox']");
+      if (box) listbox = box.querySelector("[role='listbox']") || box;
+    }
+    if (!listbox) {
+      // last resort: the visible listbox currently on screen
+      var boxes = Array.prototype.slice.call(document.querySelectorAll("[role='listbox']")).filter(visible);
+      listbox = boxes[boxes.length - 1] || document;
+    }
+
+    var opts = Array.prototype.slice
+      .call(listbox.querySelectorAll("[role='option'],lightning-base-combobox-item"))
+      .filter(visible);
+    console.log("Options in THIS dropdown:", opts.length);
+
+    var opt = opts[optionNo - 1];
+    if (!opt) { console.error("Option #" + optionNo + " NOT found (only " + opts.length + ")."); return; }
     console.log("Clicking option #" + optionNo + " -> \"" + opt.textContent.trim() + "\"");
     clickEl(opt);
     console.log("Done.");
@@ -114,7 +162,7 @@ you can verify before wiring it into a test.
 |-----------------|----------------|
 | `dropdownXpath` (1st arg) | `dropdownXpath` variable |
 | `optionNo` (2nd arg) | `optionNo` variable |
-| `(//*[@role='option'])[N]` | `(//*[@role='option'])[N]` |
+| scope by `aria-controls` listbox id | scope by `aria-controls` → `getElementById` |
 | `dropdown.click()` then `option.click()` | `clickEl(dd)` then `clickEl(opt)` |
 
 ---
@@ -123,7 +171,8 @@ you can verify before wiring it into a test.
 
 | Problem | Fix |
 |---------|-----|
-| Options aren't `role='option'` (rare in Lightning) | Change the option XPath in **both** places to `(//lightning-base-combobox-item)[N]` |
+| **Two dropdowns → wrong one selected** | Already handled: options are scoped to the opened dropdown's own `aria-controls` listbox. Just make sure `dropdownXpath` uniquely points to the **correct** trigger (verify with the XPath Finder — it should say `unique`). |
+| Options aren't `role='option'` (rare in Lightning) | The console script already also matches `lightning-base-combobox-item`. For Java, change `//*[@role='option']` to `//lightning-base-combobox-item`. |
 | Option clicks too early / not found | Increase the console `setTimeout` from `800` ms, or the Java `Duration.ofSeconds(20)` wait |
 | Dropdown doesn't open | Confirm `dropdownXpath` is the **clickable trigger** (use the XPath Finder's `[clickable]` badge) |
 | Wrong option selected | Remember `optionNo` is **1‑based** — the first option is `1`, not `0` |
