@@ -1,74 +1,40 @@
-Dropdown → Select Option by Position
+# Dropdown → Select Option by Position
 
-A reusable way to open a dropdown and click an option by its number (1‑based),
-passing only two values:
+A reusable way to open a dropdown and click an option **by its number** (1‑based),
+passing only **two values**:
 
+| Input | Meaning | Example |
+|-------|---------|---------|
+| `dropdownXpath` | XPath of the dropdown trigger | `//button[@aria-label='Status']` |
+| `optionNo`      | Which option to click (1‑based) | `2` |
 
+**What it does:** clicks the dropdown to open it → clicks the option at the given position.
 
+The option locator is built as `(//*[@role='option'])[N]` — exactly the
+position‑based XPath the **XPath Finder** suggests, so the two stay in sync.
 
+---
 
+## 1. Step Definition (Cucumber + Selenium)
 
+### Feature file usage
 
-Input
-
-
-
-Meaning
-
-
-
-Example
-
-
-
-
-
-dropdownXpath
-
-
-
-XPath of the dropdown trigger
-
-
-
-//button[@aria-label='Status']
-
-
-
-
-
-optionNo
-
-
-
-Which option to click (1‑based)
-
-
-
-2
-
-What it does: clicks the dropdown to open it → clicks the option at the given position.
-
-The option locator is built as (//*[@role='option'])[N] — exactly the
-position‑based XPath the XPath Finder suggests, so the two stay in sync.
-
-
-
-1. Step Definition (Cucumber + Selenium)
-
-Feature file usage
-
+```gherkin
 And I open dropdown "//button[@aria-label='Status']" and select option number "2"
+```
 
-StepDefinition.java
+### `StepDefinition.java`
 
+```java
 @Then("^I open dropdown \"(.*?)\" and select option number \"(.*?)\"$")
 public void i_open_dropdown_and_select_option_number(String dropdownXpath, String optionNo) throws Exception {
     stepDefinitionHelperWebClassInstance.selectDropdownOptionByPosition(dropdownXpath, optionNo);
 }
+```
 
-StepDefinitionHelperWeb.java
+### `StepDefinitionHelperWeb.java`
 
+```java
 public void selectDropdownOptionByPosition(String dropdownXpath, String optionNo) throws Exception {
     WebDriver driver = DriverManagerThreadSafe.getDriver();
     WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(20));
@@ -84,24 +50,28 @@ public void selectDropdownOptionByPosition(String dropdownXpath, String optionNo
     option.click();
     Thread.sleep(1000);
 }
+```
 
-Imports (add if missing)
+### Imports (add if missing)
 
+```java
 import java.time.Duration;
 import org.openqa.selenium.By;
 import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.WebElement;
 import org.openqa.selenium.support.ui.WebDriverWait;
 import org.openqa.selenium.support.ui.ExpectedConditions;
+```
 
+---
 
+## 2. Console Test Script
 
-2. Console Test Script
-
-Paste this into the browser DevTools Console. Edit the two values at the top,
-then press Enter. It performs the same open‑then‑click‑by‑position behavior so
+Paste this into the browser **DevTools Console**. Edit the two values at the top,
+then press Enter. It performs the **same** open‑then‑click‑by‑position behavior so
 you can verify before wiring it into a test.
 
+```javascript
 (function () {
   // ===== EDIT THESE TWO =====
   var dropdownXpath = "PASTE_DROPDOWN_XPATH_HERE";
@@ -134,116 +104,26 @@ you can verify before wiring it into a test.
     console.log("Done.");
   }, 800);
 })();
+```
 
+---
 
+## How the two map together
 
-How the two map together
+| Step Definition | Console Script |
+|-----------------|----------------|
+| `dropdownXpath` (1st arg) | `dropdownXpath` variable |
+| `optionNo` (2nd arg) | `optionNo` variable |
+| `(//*[@role='option'])[N]` | `(//*[@role='option'])[N]` |
+| `dropdown.click()` then `option.click()` | `clickEl(dd)` then `clickEl(opt)` |
 
+---
 
+## Troubleshooting
 
-
-
-
-
-Step Definition
-
-
-
-Console Script
-
-
-
-
-
-dropdownXpath (1st arg)
-
-
-
-dropdownXpath variable
-
-
-
-
-
-optionNo (2nd arg)
-
-
-
-optionNo variable
-
-
-
-
-
-(//*[@role='option'])[N]
-
-
-
-(//*[@role='option'])[N]
-
-
-
-
-
-dropdown.click() then option.click()
-
-
-
-clickEl(dd) then clickEl(opt)
-
-
-
-Troubleshooting
-
-
-
-
-
-
-
-Problem
-
-
-
-Fix
-
-
-
-
-
-Options aren't role='option' (rare in Lightning)
-
-
-
-Change the option XPath in both places to (//lightning-base-combobox-item)[N]
-
-
-
-
-
-Option clicks too early / not found
-
-
-
-Increase the console setTimeout from 800 ms, or the Java Duration.ofSeconds(20) wait
-
-
-
-
-
-Dropdown doesn't open
-
-
-
-Confirm dropdownXpath is the clickable trigger (use the XPath Finder's [clickable] badge)
-
-
-
-
-
-Wrong option selected
-
-
-
-Remember optionNo is 1‑based — the first option is 1, not 0
-
+| Problem | Fix |
+|---------|-----|
+| Options aren't `role='option'` (rare in Lightning) | Change the option XPath in **both** places to `(//lightning-base-combobox-item)[N]` |
+| Option clicks too early / not found | Increase the console `setTimeout` from `800` ms, or the Java `Duration.ofSeconds(20)` wait |
+| Dropdown doesn't open | Confirm `dropdownXpath` is the **clickable trigger** (use the XPath Finder's `[clickable]` badge) |
+| Wrong option selected | Remember `optionNo` is **1‑based** — the first option is `1`, not `0` |
