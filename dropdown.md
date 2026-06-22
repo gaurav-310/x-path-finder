@@ -45,9 +45,10 @@ public void selectDropdownOptionByPosition(String dropdownXpath, String optionNo
     dropdown.click();
     Thread.sleep(800);
 
-    // 2. Arrow Down N times, then Enter
+    // 2. Arrow Down (N-1) times, then Enter.
+    //    The combobox pre-highlights option 1 on open, so option N needs N-1 presses.
     int pos = Integer.parseInt(optionNo.trim());
-    for (int i = 0; i < pos; i++) {
+    for (int i = 0; i < pos - 1; i++) {
         dropdown.sendKeys(Keys.ARROW_DOWN);
         Thread.sleep(150);
     }
@@ -82,8 +83,9 @@ Paste into the browser **DevTools Console**, edit the two values at the top, pre
 (function () {
   // ===== EDIT THESE TWO =====
   var dropdownXpath = "//button[@aria-label='Select Address' and @role='combobox']";
-  var optionNo = 2;   // 1-based
+  var optionNo = 2;       // 1-based
   // ==========================
+  var GAP_MS = 200;       // delay between key presses (so each one registers)
 
   function xp(p) {
     return document.evaluate(p, document, null,
@@ -94,6 +96,14 @@ Paste into the browser **DevTools Console**, edit the two values at the top, pre
     el.dispatchEvent(new KeyboardEvent("keyup",   { bubbles: true, key: key, code: key }));
   }
   function clickEl(el) { el.scrollIntoView({ block: "center" }); el.click(); }
+  // text of the currently highlighted option (XPath finds it by id, pierces shadow)
+  function activeText() {
+    var id = dd.getAttribute("aria-activedescendant");
+    if (!id) return "(none)";
+    var el = document.evaluate("//*[@id=" + JSON.stringify(id) + "]", document, null,
+      XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+    return el ? el.textContent.trim() : "(not found: " + id + ")";
+  }
 
   var dd = xp(dropdownXpath);
   if (!dd) { console.error("Dropdown NOT found"); return; }
@@ -103,17 +113,27 @@ Paste into the browser **DevTools Console**, edit the two values at the top, pre
 
   setTimeout(function () {
     dd.focus();
-    console.log("Navigating to option #" + optionNo + " using keyboard...");
-    for (var i = 0; i < optionNo; i++) triggerKey(dd, "ArrowDown");   // N presses -> Nth option
+    console.log("Navigating to option #" + optionNo + " ...");
 
-    setTimeout(function () {
-      console.log("Selecting with Enter...");
-      triggerKey(dd, "Enter");
-      console.log("Done");
-    }, 300);
+    var pressed = 0;
+    (function step() {
+      if (pressed < optionNo - 1) {          // option 1 is pre-highlighted on open
+        triggerKey(dd, "ArrowDown");
+        pressed++;
+        console.log("ArrowDown #" + pressed + " -> highlighted: " + activeText());
+        setTimeout(step, GAP_MS);            // wait before the next press
+      } else {
+        console.log("Selecting -> " + activeText());
+        triggerKey(dd, "Enter");
+        console.log("Done");
+      }
+    })();
   }, 800);
 })();
 ```
+
+The `ArrowDown #n -> highlighted: ...` log lets you confirm it moves one option per
+press. If it stops one short or one past your target, adjust the `optionNo - 1` test.
 
 ---
 
@@ -124,7 +144,7 @@ Paste into the browser **DevTools Console**, edit the two values at the top, pre
 | `dropdownXpath` (1st arg) | `dropdownXpath` variable |
 | `optionNo` (2nd arg) | `optionNo` variable |
 | `dropdown.click()` | `clickEl(dd)` |
-| `dropdown.sendKeys(Keys.ARROW_DOWN)` × N | `triggerKey(dd, "ArrowDown")` × N |
+| `dropdown.sendKeys(Keys.ARROW_DOWN)` × (N-1) | `triggerKey(dd, "ArrowDown")` × (N-1) |
 | `dropdown.sendKeys(Keys.ENTER)` | `triggerKey(dd, "Enter")` |
 
 ---
@@ -133,7 +153,7 @@ Paste into the browser **DevTools Console**, edit the two values at the top, pre
 
 | Problem | Fix |
 |---------|-----|
-| Lands on wrong option (off by one) | Change the loop to `i <= pos` or `i < pos - 1` — some comboboxes pre‑highlight option 1 on open |
+| Lands on wrong option | The loop uses `i < pos - 1` because the combobox **pre‑highlights option 1** on open. If your combobox does **not** pre‑highlight, change it back to `i < pos`. |
 | Console keyboard does nothing | Dispatch keys **on the combobox button** (`triggerKey(dd, ...)`) after `dd.focus()`, **not** on `document.activeElement` |
 | Two dropdowns → wrong one | Make sure `dropdownXpath` is **unique** (verify with the XPath Finder — it should say `unique`). The keys only act on the dropdown you opened/focused. |
 | Dropdown doesn't open | Confirm `dropdownXpath` is the **clickable trigger** (XPath Finder shows `[clickable]`) |
