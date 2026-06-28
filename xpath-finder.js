@@ -127,8 +127,22 @@ function isClickable(el) {
   var role = el.getAttribute && el.getAttribute("role");
   if (/^(button|link|menuitem|tab|option|checkbox|radio|switch)$/.test(role || "")) return true;
   if (el.getAttribute && (el.getAttribute("onclick") || el.getAttribute("tabindex") === "0")) return true;
-  if (t.indexOf("-") > 0) return true; // custom element
+  // Custom elements: ONLY genuinely interactive ones — NOT layout/page wrappers
+  // (one-record-home-flexipage2, records-record-layout-*, force-*, flexipage-*).
+  if (t.indexOf("-") > 0) {
+    if (/(^|-)(button|link|combobox|menu|tab|toggle|checkbox|radio|input|picklist|datepicker)(-|$)/.test(t)) return true;
+    if (el.getAttribute && (el.getAttribute("data-navigation") || el.getAttribute("onclick"))) return true;
+    return false;
+  }
   return false;
+}
+
+// Layout / page wrapper custom elements that must NEVER be used as a locator
+// target (one-record-home-flexipage2, records-record-layout-*, flexipage-*, ...).
+function isLayoutTag(t) {
+  if (!t || t.indexOf("-") < 0) return false;
+  return /^(one-|flexipage|forcegenerated|forcecommunity|force-record-layout|records-record-layout|records-lwc|active-|oneflexipage|comm-)/.test(t) ||
+         /(flexipage\d*|layout-block|layout-section|layout-row|-template|-container|-region|-broker)$/.test(t);
 }
 
 // Is this element a form control (or inside a Lightning form wrapper)?
@@ -296,7 +310,9 @@ function gen(rawEl) {
   var oTxt = ownText(el);
 
   // ---------- Lightning custom element (tag has a dash) ----------
-  if (t.indexOf("-") > 0) {
+  // Skip layout/page wrappers (one-record-home-flexipage2, records-record-layout-*)
+  // — they must never become a locator target.
+  if (t.indexOf("-") > 0 && !isLayoutTag(t)) {
     ["data-id", "data-name", "data-label", "aria-label", "title", "name"].forEach(function (a) {
       var v = el.getAttribute(a);
       if (v && v.length < 80 && !looksDynamic(v))
@@ -309,7 +325,7 @@ function gen(rawEl) {
   // ---------- Shadow DOM host attributes ----------
   try {
     var root = el.getRootNode && el.getRootNode();
-    if (root && root !== document && root.host) {
+    if (root && root !== document && root.host && !isLayoutTag(tagOf(root.host))) {
       var h = root.host, ht = tagOf(h);
       ["data-id", "data-name", "data-label", "aria-label", "title"].forEach(function (a) {
         var hv = h.getAttribute(a);
@@ -712,6 +728,8 @@ function appendDropdownOptionXPaths(el, t, r) {
 
 // Neighbor-anchored XPaths (label/heading nearby with unique text)
 function appendNeighborXPaths(el, t, txt, r) {
+  // never anchor neighbors/headings to a layout/page wrapper tag
+  if (isLayoutTag(t)) return;
   function isUniqueText(text, tag) {
     var xp = "//" + tag + "[normalize-space()=" + wq(text) + "]";
     return countMatches(xp) === 1;
@@ -1097,6 +1115,8 @@ function rankAndPick(rawList, el) {
     if (/\sand\s/.test(xp) && (xp.match(/=/g) || []).length >= 2) s -= 15; // combination
     // Modal/dialog-scoped (unique inside popups — Submit/Save/Cancel)
     if (/@role='dialog'|slds-modal/.test(xp)) s -= 24;
+    // Layout/page wrappers are useless as a target — bury them hard
+    if (/(one-[\w-]*flexipage|records-record-layout|force-record-layout|flexipage-|forcegenerated|records-lwc)/.test(xp)) s += 300;
     // Salesforce form-field strategies (very reliable for inputs)
     if (/lightning-[a-z-]+\[\.\/\/label.*\/\/(input|textarea|select)/.test(xp)) s -= 34; // host scoped by label (best for shadow)
     if (/slds-form-element.*\/\/(input|textarea|select)/.test(xp)) s -= 28;
@@ -1577,6 +1597,15 @@ function bestTarget(el, e) {
   var t = tagOf(deep);
   if (SVG_TAGS.test(t)) { deep = walkUpToClickable(deep); t = tagOf(deep); }
 
+  // Never sit on a layout/page wrapper — drill to the deepest real element
+  // rendered at the click point (fixes "everything resolves to flexipage").
+  if (isLayoutTag(tagOf(deep))) {
+    try {
+      var fp2 = document.elementFromPoint(e.clientX, e.clientY);
+      if (fp2 && fp2.nodeType === 1 && !isLayoutTag(tagOf(fp2))) { deep = fp2; t = tagOf(deep); }
+    } catch (ex) {}
+  }
+
   // Radio/checkbox: if the click landed on the label, faux box, or text
   // span, resolve to the actual <input> for that single option.
   var radioInput = resolveRadioInput(deep);
@@ -1584,7 +1613,12 @@ function bestTarget(el, e) {
 
   if (!isClickable(deep)) {
     var cur = deep, d = 0;
-    while (cur && d < 10) { if (isClickable(cur)) { deep = cur; break; } cur = parentAcrossShadow(cur); d++; }
+    while (cur && d < 10) {
+      if (isClickable(cur)) { deep = cur; break; }
+      var nxt = parentAcrossShadow(cur);
+      if (nxt && isLayoutTag(tagOf(nxt))) break;   // stop before climbing into a wrapper
+      cur = nxt; d++;
+    }
   }
   return deep;
 }
@@ -1674,6 +1708,40 @@ function copyText(text, elem) {
   }
 }
 
+// Build a sensible objectId from the element (prefix + cleaned descriptor),
+// matching the recorder's naming convention.
+function objectIdFor(el) {
+  var tg = tagOf(el);
+  var type = (el.getAttribute && (el.getAttribute("type") || "")).toLowerCase();
+  var role = (el.getAttribute && (el.getAttribute("role") || "")).toLowerCase();
+  var pfx = "el_";
+  if (tg === "a" || role === "link") pfx = "lnk_";
+  else if (tg === "button" || role === "button") pfx = "btn_";
+  else if (tg === "textarea") pfx = "txt_";
+  else if (tg === "select" || role === "combobox" || role === "listbox" ||
+           (el.getAttribute && el.getAttribute("aria-haspopup") === "listbox") ||
+           closestAcrossShadow(el, "lightning-combobox,lightning-picklist,lightning-grouped-combobox")) pfx = "dd_";
+  else if (tg === "input" && type === "checkbox") pfx = "chk_";
+  else if (tg === "input" && type === "radio") pfx = "rdo_";
+  else if (tg === "input") pfx = "input_";
+  else if (role === "option" || closestAcrossShadow(el, "[role='option'],lightning-base-combobox-item")) pfx = "opt_";
+
+  var desc = findLabel(el) || fullText(el) ||
+    (el.getAttribute && (el.getAttribute("aria-label") || el.getAttribute("data-label") ||
+     el.getAttribute("title") || el.getAttribute("name"))) || "";
+  desc = String(desc).replace(/[^a-zA-Z0-9]+/g, " ").trim().split(/\s+/).slice(0, 5)
+    .map(function (w) { return w.charAt(0).toUpperCase() + w.slice(1); }).join("");
+  if (!desc) desc = "Element";
+  return pfx + desc;
+}
+
+// XML object-map block for the object repository (recorder format).
+function objectXmlFor(objectId, xpath) {
+  return '<object objectId="' + objectId + '">\n' +
+         '    <objectProperty>xpath=' + xpath + '</objectProperty>\n' +
+         '</object>';
+}
+
 function show(rawEl, e) {
   hide();
   var el = bestTarget(rawEl, e);
@@ -1754,22 +1822,31 @@ function show(rawEl, e) {
       "background:#1565c0;color:#fff;border:none;border-radius:3px;white-space:nowrap;";
     testBtn.textContent = "Test";
 
+    var objBtn = document.createElement("button");
+    objBtn.style.cssText = "cursor:pointer;padding:2px 8px;font-size:10px;" +
+      "background:#6a1b9a;color:#fff;border:none;border-radius:3px;white-space:nowrap;";
+    objBtn.textContent = "Obj";
+
     code.onclick = function (ev) { ev.stopPropagation(); copyText(item.xp, code); };
     copyBtn.onclick = function (ev) { ev.stopPropagation(); copyText(item.xp, copyBtn); };
     testBtn.onclick = function (ev) {
       ev.stopPropagation();
       copyText(testCommandFor(item.xp), testBtn);
     };
+    objBtn.onclick = function (ev) {
+      ev.stopPropagation();
+      copyText(objectXmlFor(objectIdFor(el), item.xp), objBtn);
+    };
 
     row.appendChild(num); row.appendChild(code);
     row.appendChild(badge); row.appendChild(clk);
-    row.appendChild(copyBtn); row.appendChild(testBtn);
+    row.appendChild(copyBtn); row.appendChild(testBtn); row.appendChild(objBtn);
     box.appendChild(row);
   });
 
   var hint = document.createElement("div");
   hint.style.cssText = "margin-top:6px;font-size:10px;color:#777;";
-  hint.textContent = "Copy = xpath | Test = smart console cmd (type for inputs, click for buttons)";
+  hint.textContent = "Copy = xpath | Test = console cmd | Obj = object-map <object> block";
   box.appendChild(hint);
 
   document.body.appendChild(box);
