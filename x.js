@@ -29,3 +29,28 @@
   console.log("XPATH:", xpath);
   console.log("ROW "+row+" found:", !!el, el?("-> "+el.textContent.trim()):"");
 })();
+
+
+
+
+
+
+
+
+
+
+
+
+
+(function () {
+  var labels=[...new Set([...document.querySelectorAll('[data-label]')].map(e=>e.getAttribute('data-label')))];
+  console.log("ALL data-labels:", labels);
+  var cell = document.evaluate("//*[@data-label='Opportunity Name']", document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+  if (cell) {
+    var link = cell.querySelector("a, records-hoverable-link, lightning-formatted-url, button, [role='button']");
+    console.log("LINK tag:", link ? link.tagName.toLowerCase() : "NONE");
+    console.log("CELL HTML:", cell.outerHTML.replace(/\s+/g,' ').substring(0,300));
+  } else {
+    console.log("No cell with data-label='Opportunity Name' — pick the exact one from ALL data-labels above.");
+  }
+})();
