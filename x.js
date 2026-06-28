@@ -1,47 +1,19 @@
 (function () {
   var label = "Opportunity Record Type";
 
-  function deepAll(root, out) {
-    out = out || [];
-    var kids = root.querySelectorAll ? root.querySelectorAll("*") : [];
-    for (var i = 0; i < kids.length; i++) {
-      var k = kids[i];
-      out.push(k);
-      if (k.shadowRoot) deepAll(k.shadowRoot, out);
-    }
-    return out;
-  }
-  function cls(e){ return (e.getAttribute && e.getAttribute("class")) || ""; }
+  function deepAll(root, out){ out=out||[]; var k=root.querySelectorAll?root.querySelectorAll("*"):[];
+    for(var i=0;i<k.length;i++){ out.push(k[i]); if(k[i].shadowRoot) deepAll(k[i].shadowRoot,out);} return out; }
+  function deepText(node){ var t=""; (function w(n){ if(n.nodeType===3){ t+=n.textContent; return; }
+    if(n.shadowRoot) w(n.shadowRoot); var c=n.childNodes||[]; for(var i=0;i<c.length;i++) w(c[i]); })(node);
+    return t.replace(/\s+/g," ").trim(); }
 
-  var all = deepAll(document);
-  console.log("deep nodes scanned:", all.length);
+  var item = deepAll(document).find(function(e){
+    return e.tagName && e.tagName.toLowerCase()==="records-record-layout-item" && e.getAttribute("field-label")===label; });
+  if(!item){ console.log("item NOT found by field-label"); return; }
 
-  // node whose trimmed text is exactly the label
-  var lbl = all.find(function (e) { return (e.textContent || "").replace(/\s+/g," ").trim() === label; });
-  if (!lbl) {
-    var loose = all.filter(function (e) { return (e.textContent || "").includes(label) && e.children.length <= 2; });
-    lbl = loose[0];
-  }
-  if (!lbl) { console.log("Label NOT found even across shadow — could be an iframe."); return; }
-  console.log("label node:", lbl.tagName.toLowerCase());
+  var val = deepAll(item).find(function(e){ var t=e.tagName.toLowerCase();
+    var c=(e.getAttribute&&e.getAttribute("class"))||""; return /slds-form-element__static/.test(c)||/^lightning-formatted-/.test(t); });
 
-  // walk up (across shadow) to the field container
-  function up(el){ return el.parentElement || (el.getRootNode && el.getRootNode().host) || null; }
-  var item = lbl, d = 0;
-  while (item && d < 8) {
-    var t = item.tagName.toLowerCase();
-    if (t === "records-record-layout-item" || /slds-form-element/.test(cls(item))) break;
-    item = up(item); d++;
-  }
-  console.log("field container:", item ? item.tagName.toLowerCase() : "none");
-
-  if (item) {
-    var val = deepAll(item).find(function (e) {
-      var t = e.tagName.toLowerCase();
-      return /^lightning-formatted-/.test(t) || /slds-form-element__static/.test(cls(e)) || t === "records-record-type";
-    });
-    console.log("VALUE element:", val ? val.tagName.toLowerCase() : "?",
-                "| VALUE TEXT:", val ? val.textContent.trim() : "(item text minus label)");
-    console.log("ITEM HTML:", item.outerHTML.replace(/\s+/g," ").substring(0,500));
-  }
+  console.log("VALUE (targeted):", val ? deepText(val) : "(none)");
+  console.log("VALUE (whole item deepText):", deepText(item));
 })();
