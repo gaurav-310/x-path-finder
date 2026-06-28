@@ -391,6 +391,18 @@ function gen(rawEl) {
       r.push("//" + t + "[@aria-label=" + wq(cAria) + " and @role='combobox']");
       r.push("//" + t + "[@aria-label=" + wq(cAria) + "]");
     }
+    // VERIFICATION: the SELECTED value shown in the trigger, scoped to the field
+    // label (presence-based verify — matches only when this value is selected).
+    var selVal = fullText(el);
+    if (selVal && selVal.length < 60 && !looksDynamic(selVal) &&
+        selVal !== comboLbl && !/^select(\b| an option|\.\.\.)/i.test(selVal)) {
+      if (comboHost) {
+        r.push("//" + tagOf(comboHost) + "[.//label[normalize-space()=" + wq(comboLbl) +
+               "]]//*[normalize-space()=" + wq(selVal) + "]");
+      }
+      r.push("//*[contains(@class,'slds-form-element')][.//label[normalize-space()=" + wq(comboLbl) +
+             "]]//*[normalize-space()=" + wq(selVal) + "]");
+    }
   }
 
   // ---------- Span / div leaf text ----------
