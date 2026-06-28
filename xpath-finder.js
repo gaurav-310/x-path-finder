@@ -1,5 +1,5 @@
 /**
- * sSalesforce XPath Finder v11 (clean rebuild)
+ * sSalesforce XPath Finder v10 (clean rebuild)
  *
  * Click any element -> get up to 6 ranked, validated XPath suggestions.
  * Built for Salesforce Lightning (Shadow DOM, dynamic IDs, tables, grids).
@@ -633,7 +633,7 @@ function appendClickableAncestorXPaths(el, t, txt, oTxt, r) {
   });
 }
 
-// Dropdown option XPaths — both text-based and POSITION-based (#N)
+// Dropdown option XPaths — by data-value, by text, and by POSITION (#N)
 function appendDropdownOptionXPaths(el, t, r) {
   var optEl = el.closest(
     "[role='option'],lightning-base-combobox-item,[role='listbox'] li"
@@ -645,11 +645,18 @@ function appendDropdownOptionXPaths(el, t, r) {
   }
 
   var listbox = optEl.closest("[role='listbox'],ul.slds-listbox,.slds-dropdown");
+
+  // VALUE of the option. Salesforce sets data-value on combobox items; fall back to
+  // title, then the visible text (incl. a .slds-truncate / span child if the item's
+  // own textContent reads empty — e.g. when the click resolves to a wrapper).
+  var optVal = (optEl.getAttribute &&
+    (optEl.getAttribute("data-value") || optEl.getAttribute("title"))) || "";
   var optTxt = fullText(optEl);
-  if (optTxt.length > 60) {
-    var sp = optEl.querySelector("span");
-    optTxt = sp ? sp.textContent.trim() : "";
+  if (!optTxt || optTxt.length > 60) {
+    var tEl = optEl.querySelector && optEl.querySelector("[title],.slds-truncate,span");
+    optTxt = (tEl && (tEl.getAttribute("title") || (tEl.textContent || "").trim())) || optVal || "";
   }
+  if (optTxt.length > 60) optTxt = "";
 
   // Position of this option among its siblings
   var idx = 1;
@@ -662,11 +669,9 @@ function appendDropdownOptionXPaths(el, t, r) {
     }
   }
 
-  // --- SCOPED to the owning dropdown's FIELD LABEL (unique across multiple
-  //     dropdowns; e.g. two Yes/No pickers won't clash) ---
+  // Owning dropdown's field label (to scope options to THIS dropdown)
   var comboHost = closestAcrossShadow(optEl,
     "lightning-combobox,lightning-grouped-combobox,lightning-picklist,lightning-base-combobox");
-  // If the listbox is a separate overlay, find the trigger via aria-controls.
   if (!comboHost && listbox && listbox.id) {
     try {
       var trigRes = document.evaluate("//*[@aria-controls=" + wq(listbox.id) + "]",
@@ -677,28 +682,28 @@ function appendDropdownOptionXPaths(el, t, r) {
     } catch (e) {}
   }
   var fieldLbl = comboHost ? findLabel(comboHost) : "";
-  if (fieldLbl && fieldLbl.length < 60 && !looksDynamic(fieldLbl)) {
-    var chTag = tagOf(comboHost);
-    var hostScope = "//" + chTag + "[.//label[normalize-space()=" + wq(fieldLbl) + "]]";
-    var formScope = "//*[contains(@class,'slds-form-element')]" +
-                    "[.//label[normalize-space()=" + wq(fieldLbl) + "]]";
-    if (optTxt && optTxt.length < 60 && !looksDynamic(optTxt)) {
-      // option by text, scoped to THIS field (preferred — unique)
+  var hostScope = (fieldLbl && fieldLbl.length < 60 && !looksDynamic(fieldLbl))
+    ? "//" + tagOf(comboHost) + "[.//label[normalize-space()=" + wq(fieldLbl) + "]]" : "";
+
+  // --- by DATA-VALUE (most reliable for Lightning combobox items) ---
+  if (optVal && optVal.length < 60 && !looksDynamic(optVal)) {
+    if (hostScope) r.push(hostScope + "//*[@role='option'][@data-value=" + wq(optVal) + "]");
+    r.push("//lightning-base-combobox-item[@data-value=" + wq(optVal) + "]");
+    r.push("//*[@role='option'][@data-value=" + wq(optVal) + "]");
+  }
+
+  // --- by TEXT (value-included; great for verification) ---
+  if (optTxt && optTxt.length < 60 && !looksDynamic(optTxt)) {
+    if (hostScope) {
       r.push(hostScope + "//*[@role='option'][normalize-space()=" + wq(optTxt) + "]");
       r.push(hostScope + "//lightning-base-combobox-item[.//span[normalize-space()=" + wq(optTxt) + "]]");
-      r.push(formScope + "//*[@role='option'][normalize-space()=" + wq(optTxt) + "]");
     }
-    // option by position, scoped to THIS field
-    r.push("(" + hostScope + "//*[@role='option'])[" + idx + "]");
-  }
-
-  // --- text-based (global; works when only one dropdown is open) ---
-  if (optTxt && optTxt.length < 60 && !looksDynamic(optTxt)) {
-    r.push("//lightning-base-combobox-item[.//span[text()=" + wq(optTxt) + "]]");
     r.push("//*[@role='option'][normalize-space()=" + wq(optTxt) + "]");
+    r.push("//lightning-base-combobox-item[.//span[normalize-space()=" + wq(optTxt) + "]]");
   }
 
-  // --- POSITION-based (select option #N without text) ---
+  // --- by POSITION (select option #N without text) ---
+  if (hostScope) r.push("(" + hostScope + "//*[@role='option'])[" + idx + "]");
   r.push("(//lightning-base-combobox-item)[" + idx + "]");
   r.push("(//*[@role='option'])[" + idx + "]");
   r.push("(//div[@role='listbox']//*[@role='option'])[" + idx + "]");
