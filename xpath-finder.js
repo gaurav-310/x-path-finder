@@ -1,5 +1,5 @@
 /**
- * sSalesforce XPath Finder v10 (clean rebuild)
+ * sSalesforce XPath Finder v11 (clean rebuild)
  *
  * Click any element -> get up to 6 ranked, validated XPath suggestions.
  * Built for Salesforce Lightning (Shadow DOM, dynamic IDs, tables, grids).
@@ -562,6 +562,9 @@ function gen(rawEl) {
   // ---------- Modal / dialog scoping (popups, e.g. New Product form) ----------
   appendModalScopedXPaths(el, t, txt, r);
 
+  // ---------- Read-only record field (for VERIFICATION) ----------
+  appendRecordFieldXPaths(el, t, r);
+
   // ---------- Positional fallback (short) ----------
   r.push(positionalXPath(el));
 
@@ -937,6 +940,53 @@ function appendModalScopedXPaths(el, t, txt, r) {
       r.push(scope + "//" + t + "[@aria-label=" + wq(aria) + "]");
     }
   });
+}
+
+// Read-only record-detail field (record pages). For VERIFICATION: anchor by the
+// field-label attribute / SLDS label and point at the VALUE container so the test
+// can read getText()/getAttribute()/getCssValue(). NOTE: if the field is in native
+// shadow DOM these will show 0 hits — use the deep-shadow getFieldValueByLabel()
+// helper (see VERIFY-FIELD-VALUE.md) for those.
+function appendRecordFieldXPaths(el, t, r) {
+  var item = closestAcrossShadow(el, "records-record-layout-item,[field-label]");
+  var sldsEl = closestAcrossShadow(el, ".slds-form-element");
+  var host = item || sldsEl;
+  if (!host) return;
+
+  // label: field-label attr, else a recognized label element, else findLabel
+  var fl = (host.getAttribute && host.getAttribute("field-label")) || "";
+  var lblEl = host.querySelector &&
+    host.querySelector(".slds-form-element__label,.test-id__field-label,legend");
+  var lbl = (fl || (lblEl && lblEl.textContent) || findLabel(el) || "")
+              .replace(/^\s*sort(ed)?\s*by\s*:?\s*/i, "").replace(/\s+/g, " ").trim();
+  if (!lbl || lbl.length > 60 || looksDynamic(lbl)) return;
+
+  // value = the clicked element's own text (when you click the value, not the label)
+  var valTxt = fullText(el);
+  if (valTxt === lbl) valTxt = "";
+
+  // 1. field-label attribute anchors (cleanest when present)
+  if (fl && !looksDynamic(fl)) {
+    r.push("//records-record-layout-item[@field-label=" + wq(fl) + "]");
+    r.push("//*[@field-label=" + wq(fl) + "]//lightning-formatted-text");
+    r.push("//*[@field-label=" + wq(fl) + "]//*[contains(@class,'slds-form-element__static')]");
+  }
+
+  // 2. value CONTAINER scoped by label (for getText-based verify)
+  r.push("//*[contains(@class,'slds-form-element')][.//*[normalize-space()=" + wq(lbl) +
+         "]]//*[contains(@class,'slds-form-element__static')]");
+
+  // 3. value-INCLUDED, label-scoped (PRESENCE-based verify — matches only when the
+  //    value is correct; this is the //div[slds-form-element][label]//span[value] pattern)
+  if (valTxt && valTxt.length < 60 && !looksDynamic(valTxt)) {
+    r.push("//*[contains(@class,'slds-form-element')][.//*[normalize-space()=" + wq(lbl) +
+           "]]//*[normalize-space()=" + wq(valTxt) + "]");
+    r.push("//*[normalize-space()=" + wq(lbl) +
+           "]/ancestor::*[contains(@class,'slds-form-element')][1]" +
+           "//lightning-formatted-text[normalize-space()=" + wq(valTxt) + "]");
+    r.push("//*[normalize-space()=" + wq(lbl) +
+           "]/ancestor::*[contains(@class,'slds-form-element')][1]//*[normalize-space()=" + wq(valTxt) + "]");
+  }
 }
 
 // Combine two stable attributes into one XPath
