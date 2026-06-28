@@ -1,34 +1,44 @@
 /**
- * sSalesforce XPath Finder v10 (clean rebuild)
- *
- * Click any element -> get up to 6 ranked, validated XPath suggestions.
- * Built for Salesforce Lightning (Shadow DOM, dynamic IDs, tables, grids).
- *
- * Usage:
- *   - Paste this whole file into DevTools Console, OR load via bookmarklet
- *   - Toggle ON/OFF: Cmd+Shift+X (Mac) / Ctrl+Shift+X (Win/Linux),
- *     or click the floating button (bottom-right)
- *   - Hover = blue highlight (like DevTools inspect)
- *   - Click an element = popup with ranked XPaths
- *   - Copy = copy the XPath | Test = copy a console command to verify
- *
- * Dropdowns: turn OFF, open the dropdown manually, turn ON, click an
- * option. You get both text-based AND position-based XPaths (option #N).
+ * Salesforce XPath Recorder v4 (Final)
+ * XML: <screen> -> <object objectId=""> -> <objectProperty>xpath=...</objectProperty>
+ * Gherkin: And I click "objectId" on "ScreenName" screen
+ * Prefixes: btn_, lnk_, input_, rdo_, chk_, dd_, txt_
  */
-(function () {
+(function(){
 "use strict";
-if (window.__xf) { console.warn("XPath Finder already loaded."); return; }
-window.__xf = true;
+if(window.__xpathRecorderActive){console.warn("XPath Recorder already loaded.");return;}
+var steps=[],isRecording=false,stepIndex=0,lastFocusedEl=null,lastFocusedValue="",screenName="RecordedScreen",usedObjIds={};
+var PID="xr-panel",OID="xr-output",BID="xr-backdrop";
+var STORE_KEY="__xr_steps",STORE_STATE="__xr_state";
 
-// ====================== state ======================
-var on = false;
-var box = null;
-var hoverEl = null;
-var hoverOutline = "";
-var hoverBg = "";
-var mode = "quick";        // "quick" | "extract"
-var extractFmt = "compact";   // "compact" | "text" | "json"
+function saveState(){
+  try{sessionStorage.setItem(STORE_KEY,JSON.stringify(steps));
+    sessionStorage.setItem(STORE_STATE,JSON.stringify({recording:isRecording,stepIndex:stepIndex,screenName:screenName,usedObjIds:usedObjIds}));
+  }catch(e){}}
 
+function loadState(){
+  try{var s=sessionStorage.getItem(STORE_KEY),st=sessionStorage.getItem(STORE_STATE);
+    if(s&&st){steps=JSON.parse(s);var state=JSON.parse(st);
+      stepIndex=state.stepIndex||0;screenName=state.screenName||"RecordedScreen";
+      usedObjIds=state.usedObjIds||{};return state.recording===true;}
+  }catch(e){}return false;}
+
+function clearState(){try{sessionStorage.removeItem(STORE_KEY);sessionStorage.removeItem(STORE_STATE);}catch(e){}}
+
+function isUI(el){while(el){if(el.id===PID||el.id===OID||el.id===BID)return true;el=el.parentElement;}return false;}
+function stag(el){return(el&&el.tagName)?el.tagName.toLowerCase():"";}
+
+function wq(s){
+  if(s==null)return"''";s=String(s);
+  if(s.indexOf("'")===-1)return"'"+s+"'";
+  if(s.indexOf('"')===-1)return'"'+s+'"';
+  return"concat('"+s.replace(/'/g,"',\"'\",'")+"')";
+}
+
+// ===== Embedded XPath engine (ported from xpath-finder.js) =====
+// Isolated namespace so it never collides with recorder helpers.
+var XF=(function(){
+"use strict";
 var SVG_TAGS = /^(svg|path|use|circle|line|rect|polygon|g|img|i)$/;
 
 // ====================== small helpers ======================
@@ -789,8 +799,15 @@ function appendTableXPaths(el, t, r) {
       (t === "th" && el.getAttribute && el.getAttribute("scope") === "col")) {
     var thTxt = cleanHeaderText(el);
     if (thTxt && thTxt.length < 50) {
+      // the header/sort element itself
       r.push("//th[normalize-space()=" + wq(thTxt) + "]");
       r.push("//*[@role='columnheader'][.//*[normalize-space()=" + wq(thTxt) + "]]");
+      // ALSO offer the FIRST data-cell LINK under this column (common need):
+      // lightning-datatable cells carry data-label=<column header>.
+      r.push("(//*[(self::td or self::th) and @data-label=" + wq(thTxt) +
+             "]//*[self::a or self::records-hoverable-link])[1]");
+      r.push("(//td[@data-label=" + wq(thTxt) + "]//a)[1]");
+      r.push("(//th[@data-label=" + wq(thTxt) + "]//records-hoverable-link)[1]");
     }
     return;
   }
@@ -1056,409 +1073,6 @@ function rankAndPick(rawList, el) {
   }
   return picked;
 }
-
-// Build the right Console command for an XPath based on the element type.
-//  - text input / textarea -> focus + set value + dispatch input/change/blur
-//  - contenteditable        -> focus + set text + dispatch input
-//  - everything else        -> scrollIntoView + focus + click
-function testCommandFor(xp) {
-  var kind = "click";
-  try {
-    var res = document.evaluate(xp, document, null,
-      XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-    var node = res.singleNodeValue;
-    if (node && node.nodeType === 1) {
-      var tg = tagOf(node);
-      var typ = (node.getAttribute && (node.getAttribute("type") || "")).toLowerCase();
-      if (tg === "textarea") kind = "input";
-      else if (tg === "input" && !/^(checkbox|radio|button|submit|reset|file)$/.test(typ)) kind = "input";
-      else if (node.getAttribute && node.getAttribute("contenteditable") === "true") kind = "ce";
-    }
-  } catch (e) {}
-
-  var xj = JSON.stringify(xp);
-  if (kind === "input") {
-    return "(function(){var e=$x(" + xj + ")[0];e.scrollIntoView({block:'center'});" +
-           "e.focus();e.value='YOUR_TEXT';" +
-           "e.dispatchEvent(new Event('input',{bubbles:true}));" +
-           "e.dispatchEvent(new Event('change',{bubbles:true}));" +
-           "e.dispatchEvent(new Event('blur',{bubbles:true}));})()";
-  }
-  if (kind === "ce") {
-    return "(function(){var e=$x(" + xj + ")[0];e.scrollIntoView({block:'center'});" +
-           "e.focus();e.textContent='YOUR_TEXT';" +
-           "e.dispatchEvent(new Event('input',{bubbles:true}));})()";
-  }
-  return "(function(){var e=$x(" + xj + ")[0];e.scrollIntoView({block:'center'});" +
-         "e.focus();e.click();})()";
-}
-
-// Does the first element matched by this XPath actually click?
-// True if the element itself, an ancestor, or a child is interactive.
-function xpathHitsClickable(xp) {
-  try {
-    var res = document.evaluate(xp, document, null,
-      XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-    var node = res.singleNodeValue;
-    if (!node || node.nodeType !== 1) return false;
-    if (isClickable(node)) return true;
-    // clickable ancestor within a few levels (cross shadow)
-    var cur = parentAcrossShadow(node), d = 0;
-    while (cur && d < 6) { if (isClickable(cur)) return true; cur = parentAcrossShadow(cur); d++; }
-    // clickable descendant
-    if (node.querySelector && node.querySelector("a,button,input,select,textarea,[role='button'],[role='link'],[role='option']"))
-      return true;
-    return false;
-  } catch (e) { return false; }
-}
-
-// ====================== interaction-kind detection ======================
-
-// Classify an element so the AI / user knows HOW to interact with it.
-// Returns one of: text-input, textarea, contenteditable, select,
-// dropdown-trigger, dropdown-option, checkbox, radio, link, button,
-// hover-click, key-target, generic.
-function detectKind(el) {
-  var t = tagOf(el);
-  var type = (el.getAttribute && (el.getAttribute("type") || "")).toLowerCase();
-  var role = (el.getAttribute && (el.getAttribute("role") || "")).toLowerCase();
-
-  if (t === "textarea") return "textarea";
-  if (el.getAttribute && el.getAttribute("contenteditable") === "true") return "contenteditable";
-  if (t === "select") return "select";
-  if (t === "input") {
-    if (type === "checkbox") return "checkbox";
-    if (type === "radio") return "radio";
-    if (/^(button|submit|reset)$/.test(type)) return "button";
-    if (type === "file") return "file";
-    return "text-input"; // text, email, tel, number, search, url, date...
-  }
-  if (role === "checkbox" || role === "switch") return "checkbox";
-  if (role === "radio") return "radio";
-  if (role === "option" || el.closest && el.closest("[role='option'],lightning-base-combobox-item")) return "dropdown-option";
-  if (role === "combobox" || (el.closest && el.closest("lightning-combobox,lightning-grouped-combobox,[role='combobox']"))) return "dropdown-trigger";
-  if (role === "tab" || (el.closest && el.closest("[role='tab'],lightning-tab"))) return "tab";
-  if (role === "menuitem" || (el.closest && el.closest("[role='menuitem']"))) return "menu-item";
-  if (t === "a") return "link";
-  if (t === "button" || role === "button") return "button";
-  // inside a menu/popover that usually needs hover
-  if (el.closest && el.closest("[role='menu'],.slds-dropdown,.slds-popover")) return "hover-click";
-  if (isClickable(el)) return "button";
-  return "generic";
-}
-
-// How to interact with each kind (Console + Selenium Java summary)
-function interactionFor(kind) {
-  switch (kind) {
-    case "text-input":
-    case "textarea":
-      return {
-        console: "focus + set value + dispatch input/change/blur",
-        java: "el.clear(); el.sendKeys(value);  // or JS dispatch if sendKeys fails"
-      };
-    case "contenteditable":
-      return {
-        console: "focus + set textContent + dispatch input",
-        java: "JS: el.textContent=value; dispatch input event"
-      };
-    case "select":
-      return {
-        console: "set selectedIndex / option + dispatch change",
-        java: "new Select(el).selectByVisibleText(value);"
-      };
-    case "dropdown-trigger":
-      return { console: "click to open", java: "el.click();" };
-    case "dropdown-option":
-      return { console: "click the option (by text or position)", java: "el.click();" };
-    case "checkbox":
-    case "radio":
-      return { console: "click", java: "if(!el.isSelected()) el.click();" };
-    case "hover-click":
-      return { console: "hover then click", java: "new Actions(driver).moveToElement(el).click().perform();" };
-    case "tab":
-      return { console: "click the tab", java: "el.click();  // wait for tab panel to load" };
-    case "menu-item":
-      return { console: "open the menu first, then click item", java: "el.click();" };
-    case "link":
-    case "button":
-      return { console: "focus + click", java: "el.click();" };
-    default:
-      return { console: "focus + click (verify it responds)", java: "el.click();" };
-  }
-}
-
-// ====================== extract-for-AI report ======================
-
-function allAttrs(el) {
-  var o = {};
-  if (el && el.attributes) {
-    for (var i = 0; i < el.attributes.length; i++) {
-      o[el.attributes[i].name] = el.attributes[i].value;
-    }
-  }
-  return o;
-}
-
-function describeShort(el) {
-  if (!el || !el.tagName) return "(none)";
-  var t = tagOf(el);
-  var idp = el.id ? "#" + el.id : "";
-  var rolep = el.getAttribute && el.getAttribute("role") ? "[role=" + el.getAttribute("role") + "]" : "";
-  var tx = fullText(el); if (tx.length > 30) tx = tx.substring(0, 30) + "...";
-  return t + idp + rolep + (tx ? ' "' + tx + '"' : "");
-}
-
-// If the element is a dropdown option/trigger, enumerate ALL options
-// in the open listbox with both by-text and by-position XPaths.
-function collectDropdownOptions(el) {
-  var listbox = el.closest && el.closest(
-    "[role='listbox'],ul.slds-listbox,.slds-dropdown,lightning-base-combobox"
-  );
-  if (!listbox) {
-    // maybe a sibling/visible listbox is open elsewhere
-    listbox = document.querySelector("[role='listbox'],ul.slds-listbox");
-  }
-  if (!listbox) return null;
-
-  var opts = listbox.querySelectorAll(
-    "[role='option'],lightning-base-combobox-item,li"
-  );
-  if (!opts.length) return null;
-
-  var out = [];
-  for (var i = 0; i < opts.length; i++) {
-    var o = opts[i];
-    var otext = fullText(o);
-    if (otext.length > 60) {
-      var sp = o.querySelector("span");
-      otext = sp ? sp.textContent.trim() : otext.substring(0, 60);
-    }
-    var dyn = looksDynamic(otext);
-    out.push({
-      index: i + 1,
-      text: otext,
-      dynamic: dyn,
-      byText: dyn ? "" :
-        "//*[@role='option'][normalize-space()=" + wq(otext) + "]",
-      byPosition: "(//*[@role='option'])[" + (i + 1) + "]"
-    });
-  }
-  return out;
-}
-
-// Build a structured object holding everything the AI needs
-function buildExtract(el, candidates) {
-  var t = tagOf(el);
-  var kind = detectKind(el);
-  var dynamicValues = [];
-
-  // collect dynamic-looking attribute values + text
-  var attrs = allAttrs(el);
-  Object.keys(attrs).forEach(function (k) {
-    if (looksDynamic(attrs[k])) dynamicValues.push(k + "=" + attrs[k]);
-  });
-  if (looksDynamic(fullText(el))) dynamicValues.push("text=" + fullText(el).substring(0, 40));
-
-  // shadow info
-  var shadow = "none";
-  try {
-    var root = el.getRootNode && el.getRootNode();
-    if (root && root !== document && root.host) {
-      shadow = { hostTag: tagOf(root.host), hostAttrs: allAttrs(root.host) };
-    }
-  } catch (e) {}
-
-  // parent chain
-  var parents = [], cur = el.parentElement, depth = 0;
-  while (cur && depth < 8 && tagOf(cur) !== "body") {
-    parents.push({ level: depth + 1, tag: tagOf(cur), attrs: allAttrs(cur) });
-    cur = cur.parentElement; depth++;
-  }
-
-  // clickable ancestor
-  var ca = el.parentElement, d2 = 0, ancestor = null;
-  while (ca && d2 < 8) { if (isClickable(ca)) { ancestor = { tag: tagOf(ca), level: d2 + 1 }; break; } ca = ca.parentElement; d2++; }
-
-  // table context
-  var table = null;
-  var cell = el.closest && el.closest("td,th,[role='gridcell'],[role='columnheader'],[role='cell']");
-  if (cell) {
-    var tableEl = cell.closest("table,[role='grid'],[role='treegrid']");
-    var rowEl = cell.closest("tr,[role='row']");
-    var colIdx = 1, s = cell;
-    while (s.previousElementSibling) { s = s.previousElementSibling; colIdx++; }
-    var heads = tableEl ? tableEl.querySelectorAll("thead th, tr:first-child th, [role='columnheader']") : [];
-    var rowCells = rowEl ? rowEl.querySelectorAll("td,[role='gridcell'],[role='cell']") : [];
-    var rowTexts = [];
-    rowCells.forEach(function (c) { var ct = fullText(c); if (ct) rowTexts.push(ct.substring(0, 30)); });
-    table = {
-      colIndex: colIdx,
-      header: heads[colIdx - 1] ? cleanHeaderText(heads[colIdx - 1]) : "",
-      ariaLabel: tableEl ? (tableEl.getAttribute("aria-label") || "") : "",
-      rowCells: rowTexts
-    };
-  }
-
-  // modal/dialog context — tells the AI to scope to THIS open popup
-  var modal = null;
-  try {
-    var mEl = modalAncestor(el);
-    if (mEl) {
-      var mt = mEl.querySelector(
-        ".slds-modal__title,.slds-modal__header h1,.slds-modal__header h2,h1,h2,[id*='modal-heading']");
-      modal = { inModal: true, title: mt ? fullText(mt).substring(0, 60) : "" };
-    }
-  } catch (e) {}
-
-  var html = "";
-  try { html = el.outerHTML.replace(/\s+/g, " ").substring(0, 400); } catch (e) {}
-
-  var pageUrl = "";
-  try { pageUrl = (window.location && window.location.href) || ""; } catch (e) {}
-
-  // The finder's own #1 pick — already validated unique + clickable.
-  // This is the XPath the AI should return unless it spots a problem.
-  var bestPick = "";
-  for (var bi = 0; bi < candidates.length; bi++) {
-    if (candidates[bi].count === 1) { bestPick = candidates[bi].xp; break; }
-  }
-  if (!bestPick && candidates.length) bestPick = candidates[0].xp;
-
-  var kindForOpts = detectKind(el);
-  var dropdownOptions = (kindForOpts === "dropdown-option" || kindForOpts === "dropdown-trigger")
-    ? collectDropdownOptions(el) : null;
-
-  return {
-    url: pageUrl,
-    targetDescription: describeShort(el),
-    bestXPath: bestPick,
-    dropdownOptions: dropdownOptions,
-    tag: t,
-    kind: kind,
-    interaction: interactionFor(kind),
-    ownText: ownText(el),
-    fullText: fullText(el).substring(0, 120),
-    label: findLabel(el),
-    isInput: /^(text-input|textarea|contenteditable|select)$/.test(kind),
-    isClickable: isClickable(el),
-    attrs: attrs,
-    shadow: shadow,
-    clickableAncestor: ancestor,
-    parents: parents,
-    prevSibling: el.previousElementSibling ? describeShort(el.previousElementSibling) : "",
-    nextSibling: el.nextElementSibling ? describeShort(el.nextElementSibling) : "",
-    table: table,
-    modal: modal,
-    candidates: candidates.map(function (c) { return { xpath: c.xp, count: c.count }; }),
-    dynamicValues: dynamicValues,
-    html: html
-  };
-}
-
-// Human-readable version of the extract
-function extractToText(x) {
-  var L = [];
-  L.push("=== XPATH EXTRACT (for AI) ===");
-  L.push("URL: " + x.url);
-  L.push("");
-  L.push(">> TARGET I CLICKED: " + x.targetDescription);
-  L.push(">> BEST XPATH (already validated unique + clickable): " + x.bestXPath);
-  L.push("");
-  L.push("ELEMENT: <" + x.tag + ">  KIND: " + x.kind);
-  L.push("INTERACTION: " + x.interaction.console);
-  L.push("  Java: " + x.interaction.java);
-  L.push("OWN_TEXT: " + JSON.stringify(x.ownText));
-  L.push("FULL_TEXT: " + JSON.stringify(x.fullText));
-  L.push("LABEL: " + JSON.stringify(x.label));
-  L.push("IS_INPUT: " + x.isInput + " | IS_CLICKABLE: " + x.isClickable);
-  L.push("");
-  L.push("ATTRS:");
-  Object.keys(x.attrs).forEach(function (k) { L.push("  " + k + " = " + JSON.stringify(x.attrs[k])); });
-  L.push("");
-  if (x.shadow === "none") L.push("SHADOW: none (light DOM)");
-  else L.push("SHADOW: host=<" + x.shadow.hostTag + "> hostAttrs=" + JSON.stringify(x.shadow.hostAttrs));
-  L.push("CLICKABLE_ANCESTOR: " + (x.clickableAncestor ? "<" + x.clickableAncestor.tag + "> (level " + x.clickableAncestor.level + ")" : "none"));
-  L.push("");
-  L.push("PARENTS:");
-  x.parents.forEach(function (p) {
-    L.push("  ^" + p.level + " <" + p.tag + "> " + JSON.stringify(p.attrs).substring(0, 160));
-  });
-  L.push("");
-  L.push("SIBLINGS: prev=" + (x.prevSibling || "none") + " | next=" + (x.nextSibling || "none"));
-  if (x.modal) {
-    L.push("");
-    L.push("MODAL: element is inside an open popup/dialog; title=" + JSON.stringify(x.modal.title));
-    L.push("  -> Scope the XPath to this dialog, e.g. //*[@role='dialog'][.//*[normalize-space()=" +
-           JSON.stringify(x.modal.title) + "]]//<control>");
-  }
-  if (x.table) {
-    L.push("");
-    L.push("TABLE: col=" + x.table.colIndex + " header=" + JSON.stringify(x.table.header) +
-           (x.table.ariaLabel ? " tableAria=" + JSON.stringify(x.table.ariaLabel) : ""));
-    L.push("  rowCells: " + JSON.stringify(x.table.rowCells));
-  }
-  L.push("");
-  L.push("CANDIDATE_XPATHS (count):");
-  x.candidates.forEach(function (c) { L.push("  [" + c.count + "] " + c.xpath); });
-  if (x.dynamicValues.length) {
-    L.push("");
-    L.push("DYNAMIC_VALUES (avoid these): " + JSON.stringify(x.dynamicValues));
-  }
-  if (x.dropdownOptions && x.dropdownOptions.length) {
-    L.push("");
-    L.push("DROPDOWN OPTIONS (all available in the open list):");
-    x.dropdownOptions.forEach(function (o) {
-      L.push("  #" + o.index + "  " + JSON.stringify(o.text) +
-             (o.dynamic ? "  (text looks dynamic -> use position)" : ""));
-      if (o.byText) L.push("       byText:     " + o.byText);
-      L.push("       byPosition: " + o.byPosition);
-    });
-  }
-  L.push("");
-  L.push("HTML: " + x.html);
-  L.push("");
-  L.push("ASK:");
-  L.push("- I clicked EXACTLY this target element (see TARGET above).");
-  L.push("- Give me the single best, STABLE XPath for THIS element only.");
-  L.push("- This element IS interactable. Do NOT say it is not clickable.");
-  L.push("- Do NOT suggest a different element or alternative approach.");
-  L.push("- Return: (1) the XPath, (2) the interaction function for KIND='" + x.kind + "'");
-  L.push("  in both Console JS and Selenium Java.");
-  L.push("- You may start from BEST XPATH above; only change it if it is");
-  L.push("  not unique or uses a value listed under DYNAMIC_VALUES.");
-  L.push("=== END ===");
-  return L.join("\n");
-}
-
-// COMPACT extract — ~12 lines, self-contained, for small-context AIs.
-// Includes its own one-line instruction so no separate system prompt is needed.
-function extractToCompact(x) {
-  var L = [];
-  L.push("SF XPATH HELP — give the single best STABLE XPath for THIS element only.");
-  L.push("TARGET: " + x.targetDescription + "  | KIND: " + x.kind + " | clickable:" + x.isClickable);
-  if (x.label) L.push("LABEL: " + JSON.stringify(x.label));
-  var keep = ["data-label", "aria-label", "name", "title", "role", "placeholder", "field-name", "data-id"];
-  var sa = [];
-  keep.forEach(function (k) { if (x.attrs[k]) sa.push(k + "=" + JSON.stringify(x.attrs[k])); });
-  if (sa.length) L.push("ATTRS: " + sa.join("  "));
-  if (x.shadow !== "none") L.push("SHADOW_HOST: <" + x.shadow.hostTag + ">");
-  if (x.modal) L.push("MODAL: inside popup; title=" + JSON.stringify(x.modal.title) + " (scope the xpath to this dialog)");
-  if (x.table) L.push("TABLE: col=" + x.table.colIndex + " header=" + JSON.stringify(x.table.header));
-  L.push("BEST (validated unique+clickable): " + x.bestXPath);
-  L.push("CANDIDATES [matchCount]:");
-  x.candidates.slice(0, 4).forEach(function (c) { L.push("  [" + c.count + "] " + c.xpath); });
-  if (x.dynamicValues.length) L.push("AVOID (dynamic): " + JSON.stringify(x.dynamicValues));
-  if (x.dropdownOptions && x.dropdownOptions.length) {
-    L.push("OPTIONS: " + x.dropdownOptions.map(function (o) {
-      return "#" + o.index + "=" + JSON.stringify(o.text);
-    }).join(" "));
-  }
-  L.push("RULES: keep BEST unless its count!=1 or it uses an AVOID value; never anchor a form field to a heading; return xpath + 1-line Java for KIND='" + x.kind + "'.");
-  return L.join("\n");
-}
-
-// ====================== target resolution ======================
-
 function bestTarget(el, e) {
   var deep = el;
   try {
@@ -1513,321 +1127,321 @@ function resolveRadioInput(el) {
   }
   return null;
 }
+return {gen:gen, bestTarget:bestTarget, positionalXPath:positionalXPath, isClickable:isClickable};
+})();
+// ===== end embedded engine =====
 
-// ====================== hover highlight ======================
+function findClickParent(el){
+  var t=stag(el);
+  if(t==="span"||t==="div"||t==="svg"||t==="path"||t==="img"||t==="i"){
+    var c=el.parentElement,d=0;
+    while(c&&d<4){var p=stag(c);
+      if(p==="button"||p==="a"||c.getAttribute("role")==="button"||c.getAttribute("role")==="menuitem")return c;
+      c=c.parentElement;d++;}
+  }return el;
+}
 
-function clearHover() {
-  if (hoverEl) {
-    hoverEl.style.outline = hoverOutline;
-    hoverEl.style.backgroundColor = hoverBg;
-    hoverEl = null; hoverOutline = ""; hoverBg = "";
+function getSfXPath(el){
+  if(!el||!el.ownerDocument)return"";
+  // Prefer the ported finder engine (ranked, validated, shadow/table aware)
+  try{ var rs=XF.gen(el); if(rs&&rs.length&&rs[0]&&rs[0].xp) return rs[0].xp; }catch(e){}
+  return getSfXPathLegacy(el);
+}
+
+function getSfXPathLegacy(el){
+  if(!el||!el.ownerDocument)return"";
+  var t=stag(el);
+  if(t==="button"){
+    var bs=el.querySelector(":scope > span, :scope > div > span");
+    if(bs&&bs.textContent.trim())return"//span[text()="+wq(bs.textContent.trim())+"]/parent::button";
+    if(el.getAttribute("title"))return"//button[@title="+wq(el.getAttribute("title"))+"]";
+    var bt=(el.textContent||"").trim();
+    if(bt&&bt.length<50)return"//button[normalize-space()="+wq(bt)+"]";
   }
-}
-function onHover(e) {
-  if (!on) return;
-  var el = e.target;
-  try {
-    var path = e.composedPath && e.composedPath();
-    if (path && path.length && path[0].nodeType === 1) el = path[0];
-  } catch (ex) {}
-  if (!el || !el.tagName) return;
-  if (el.closest && el.closest("#__xf_box,#__xf_toggle")) return;
-  if (hoverEl === el) return;
-  clearHover();
-  hoverEl = el;
-  hoverOutline = el.style.outline || "";
-  hoverBg = el.style.backgroundColor || "";
-  el.style.outline = "2px solid #4fc3f7";
-  el.style.backgroundColor = "rgba(79,195,247,0.12)";
-}
-
-// ====================== click blocking ======================
-
-function blocker(e) {
-  if (!on) return;
-  if (e.target.closest && e.target.closest("#__xf_box,#__xf_toggle")) return;
-  e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
-}
-function clickHandler(e) {
-  if (!on) return;
-  if (e.target.closest && e.target.closest("#__xf_box,#__xf_toggle")) return;
-  e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
-  show(e.target, e);
-}
-
-// ====================== popup ======================
-
-function copyText(text, elem) {
-  function flash() {
-    if (!elem) return;
-    var o = elem.textContent; elem.textContent = "\u2713";
-    setTimeout(function () { elem.textContent = o; }, 800);
+  if(t==="a"){
+    var at=(el.textContent||"").trim(),adl=el.getAttribute("data-label");
+    if(at&&adl)return"//a[text()="+wq(at)+"][@data-label="+wq(adl)+"]";
+    if(el.getAttribute("title"))return"//a[@title="+wq(el.getAttribute("title"))+"]";
+    if(at&&at.length<50){var sa=el.querySelector("span");
+      if(sa&&sa.textContent.trim()===at)return"//span[text()="+wq(at)+"]/parent::a";
+      return"//a[text()="+wq(at)+"]";}
   }
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text).then(flash);
-  } else {
-    var ta = document.createElement("textarea");
-    ta.value = text; document.body.appendChild(ta); ta.select();
-    document.execCommand("copy"); document.body.removeChild(ta); flash();
+  if(t==="span"){var st=(el.textContent||"").trim();
+    if(st&&st.length<50){var sp=el.parentElement;if(sp){var pt=stag(sp);
+      if(pt==="button")return"//span[text()="+wq(st)+"]/parent::button";
+      if(pt==="a")return"//span[text()="+wq(st)+"]/parent::a";
+      return"//span[text()="+wq(st)+"]";}}}
+  if(t==="div"){var dt=(el.textContent||"").trim();
+    if(dt&&dt.length<50&&el.children.length===0){var dp=el.parentElement;
+      if(dp&&stag(dp)==="a")return"//div[text()="+wq(dt)+"]/parent::a";
+      return"//div[text()="+wq(dt)+"]";}}
+  if(t==="input"&&el.type==="radio"){var rl=findLabel(el);if(rl)return"//span[text()="+wq(rl)+"]/ancestor::label//input[@type='radio']";}
+  if(t==="input"&&el.type==="checkbox"){var cl=findLabel(el);if(cl)return"//span[text()="+wq(cl)+"]/ancestor::label//input[@type='checkbox']";}
+  if(t==="input"||t==="textarea"){
+    var dw=el.closest("[data-label]");if(dw)return"//*[@data-label="+wq(dw.getAttribute("data-label"))+"]//" +t;
+    var aw=el.closest("[aria-label]");if(aw&&aw!==el)return"//*[@aria-label="+wq(aw.getAttribute("aria-label"))+"]//" +t;
+    if(el.getAttribute("placeholder"))return"//"+t+"[@placeholder="+wq(el.getAttribute("placeholder"))+"]";
+    if(el.getAttribute("name"))return"//"+t+"[@name="+wq(el.getAttribute("name"))+"]";
+    if(el.getAttribute("aria-label"))return"//"+t+"[@aria-label="+wq(el.getAttribute("aria-label"))+"]";
   }
+  if(t==="select"){if(el.getAttribute("name"))return"//select[@name="+wq(el.getAttribute("name"))+"]";var sl=findLabel(el);if(sl)return"//select[@aria-label="+wq(sl)+"]";}
+  if(el.getAttribute("data-id"))return"//*[@data-id="+wq(el.getAttribute("data-id"))+"]";
+  if(el.getAttribute("data-name"))return"//*[@data-name="+wq(el.getAttribute("data-name"))+"]";
+  if(el.getAttribute("aria-label"))return"//*[@aria-label="+wq(el.getAttribute("aria-label"))+"]";
+  if(el.id&&/^[a-zA-Z][\w-]*$/.test(el.id))return"//*[@id='"+el.id+"']";
+  if(el.getAttribute("title"))return"//*[@title="+wq(el.getAttribute("title"))+"]";
+  return posXPath(el);
 }
 
-function show(rawEl, e) {
-  hide();
-  var el = bestTarget(rawEl, e);
-  var results = gen(el);
-  if (!results.length) return;
+function posXPath(el){
+  var parts=[],c=el;
+  while(c&&c.nodeType===1){var t=stag(c);if(!t)break;
+    if(c.id&&/^[a-zA-Z][\w-]*$/.test(c.id)){parts.unshift(t+"[@id='"+c.id+"']");break;}
+    var s=c,cnt=0,pos=0;while(s){if(s.nodeType===1&&stag(s)===t){cnt++;if(s===c)pos=cnt;}s=s.previousElementSibling;}
+    parts.unshift(cnt>1?t+"["+pos+"]":t);c=c.parentElement;}
+  return parts.length?"//"+parts.join("/"):"//*";
+}
 
-  if (mode === "extract") { showExtract(el, results, e); return; }
+function findLabel(el){
+  if(el.id){try{var l=document.querySelector('label[for="'+CSS.escape(el.id)+'"]');
+    if(l){var s=l.querySelector("span");return(s&&s.textContent.trim())||l.textContent.trim();}}catch(e){}}
+  var w=el.closest("label,.slds-form-element,lightning-input,lightning-combobox,lightning-checkbox-group,lightning-radio-group,lightning-textarea,lightning-datepicker,lightning-input-field");
+  if(w){var wl=w.querySelector("span.slds-form-element__label,label span,legend span,label");if(wl&&wl.textContent.trim())return wl.textContent.trim();}
+  return el.getAttribute("aria-label")||el.getAttribute("data-label")||"";
+}
 
-  var elTag = tagOf(el);
-  var elTxt = fullText(el).substring(0, 30);
-  var attrInfo = "";
-  ["id", "data-label", "aria-label", "title", "name", "class"].forEach(function (a) {
-    var v = el.getAttribute(a);
-    if (v && !attrInfo) attrInfo = a + "=" + v.substring(0, 28);
+function fieldLabel(el){return el.getAttribute("data-label")||el.getAttribute("aria-label")||el.getAttribute("placeholder")||el.getAttribute("title")||findLabel(el)||el.getAttribute("name")||stag(el);}
+
+function clickDesc(el){
+  var t=stag(el);
+  if(t==="button"){var s=el.querySelector("span");if(s&&s.textContent.trim())return s.textContent.trim();return el.getAttribute("title")||(el.textContent||"").trim()||"button";}
+  if(t==="a")return el.getAttribute("title")||(el.textContent||"").trim()||"link";
+  if(t==="span"||t==="div"){var x=(el.textContent||"").trim();if(x&&x.length<50)return x;}
+  return el.getAttribute("aria-label")||el.getAttribute("title")||(el.textContent||"").trim().substring(0,40)||t;
+}
+
+function makeObjId(action,el,desc){
+  var t=stag(el),pfx="el_";
+  if(action==="click"||action==="hover_click"){pfx=t==="a"?"lnk_":"btn_";}
+  else if(action==="submit")pfx="btn_";
+  else if(action==="fill")pfx=(t==="textarea")?"txt_":"input_";
+  else if(action==="select")pfx="dd_";
+  else if(action==="check")pfx=(t==="input"&&el.type==="radio")?"rdo_":"chk_";
+  var base=(desc||"Element").replace(/[^a-zA-Z0-9]/g,"").substring(0,30);
+  if(!base)base="Element";
+  var id=pfx+base,xp=getSfXPath(el);
+  if(usedObjIds[id]&&usedObjIds[id]!==xp){var i=2;while(usedObjIds[id+i])i++;id=id+i;}
+  usedObjIds[id]=xp;return id;
+}
+
+function inputType(el){var t=stag(el);if(!t)return"other";if(t==="select")return"select";if(t==="textarea")return"textarea";
+  if(t==="input"){var tp=(el.getAttribute("type")||"text").toLowerCase();if(tp==="checkbox")return"checkbox";if(tp==="radio")return"radio";if(tp==="date"||tp==="datetime-local")return"date";return"text";}
+  if(el.getAttribute("contenteditable")==="true")return"textarea";return"other";}
+
+function addStep(action,rawEl,value,ev){
+  if(!rawEl)return;
+  var isClickType=(action==="click"||action==="submit"||action==="hover_click");
+  var el=rawEl;
+  if(isClickType){
+    // Use the finder's shadow-aware target resolution (svg/icon -> real clickable)
+    try{ el=(ev&&XF&&XF.bestTarget)?XF.bestTarget(rawEl,ev):findClickParent(rawEl); }
+    catch(e){ el=findClickParent(rawEl); }
+  }
+  stepIndex++;
+  var xp=getSfXPath(el),isClk=action==="click"||action==="submit"||action==="hover_click"||action==="key";
+  var desc=isClk?clickDesc(el):fieldLabel(el);
+  var oid=makeObjId(action,el,desc);
+  steps.push({n:stepIndex,action:action,desc:desc,objectId:oid,xpath:xp,tag:stag(el),inputType:inputType(el),value:value||""});
+  console.log("[Rec] "+stepIndex+": "+action+(value?' ="'+value+'"':"")+"|"+oid+"|"+xp);
+  updateCount();flash(el);saveState();
+}
+
+function flash(el){try{var o=el.style.outline,b=el.style.backgroundColor;el.style.outline="3px solid #f44336";el.style.backgroundColor="rgba(244,67,54,0.15)";setTimeout(function(){el.style.outline=o;el.style.backgroundColor=b;},400);}catch(e){}}
+function updateCount(){var c=document.getElementById("xr-cnt");if(c)c.textContent="Steps: "+steps.length;}
+function flushInput(){if(!lastFocusedEl)return;var v=lastFocusedEl.value||"";if(v!==lastFocusedValue&&v!==""){var t=inputType(lastFocusedEl);if(t!=="checkbox"&&t!=="radio")addStep("fill",lastFocusedEl,v);}lastFocusedEl=null;lastFocusedValue="";}
+function undoStep(){if(steps.length>0){var r=steps.pop();stepIndex--;console.log("[Rec] Undo: "+r.objectId);updateCount();}}
+
+function inModal(el){return!!(el.closest(".slds-modal,[role='dialog'],[role='alertdialog'],.uiModal,.forceModalContainer"));}
+function isSubmit(el){var t=stag(el);if(t==="input"&&el.type==="submit")return true;if(t==="button"&&el.type==="submit")return true;
+  var txt=(el.textContent||"").trim().toLowerCase();return/^(submit|save|ok|confirm|yes|apply|done)$/.test(txt)&&inModal(el);}
+function needsHover(el){return!!(el.closest("[role='menu'],[role='menubar'],[role='listbox'],.slds-dropdown,.slds-popover"));}
+function detectAction(el){if(isSubmit(el))return"submit";if(needsHover(el))return"hover_click";return"click";}
+
+function onClick(e){if(!isRecording||isUI(e.target))return;
+  var el=e.target,t=stag(el);
+  if(t==="input"&&(el.type==="checkbox"||el.type==="radio")){e.preventDefault();addStep("check",el,(!el.checked)?"true":"false");return;}
+  flushInput();
+  if(t==="option"){var s=el.closest("select");if(s){addStep("select",s,el.textContent.trim());return;}}
+  addStep(detectAction(el),el,undefined,e);
+  saveState();
+  var linkEl=el.closest("a");
+  if(linkEl&&linkEl.getAttribute("target")==="_blank"){e.preventDefault();linkEl.removeAttribute("target");linkEl.click();}
+}
+
+function onKey(e){if(!isRecording||isUI(e.target))return;var k=e.key;
+  if(k==="Enter"||k==="Tab"||k==="Escape"){if(k!=="Tab")flushInput();addStep("key",e.target,k.toUpperCase());}}
+
+function onFocus(e){if(!isRecording||isUI(e.target))return;var el=e.target,t=stag(el);
+  if(t==="input"||t==="textarea"||t==="select"||el.getAttribute("contenteditable")==="true"){flushInput();lastFocusedEl=el;lastFocusedValue=el.value||"";}}
+
+function onChange(e){if(!isRecording||isUI(e.target))return;var el=e.target,t=stag(el);
+  if(t==="select"){var o=el.options[el.selectedIndex];addStep("select",el,o?o.textContent.trim():el.value);lastFocusedEl=null;return;}
+  if(t==="input"&&(el.type==="checkbox"||el.type==="radio")){addStep("check",el,el.checked?"true":"false");return;}
+  if((t==="input"||t==="textarea")&&el.value&&el.value!==lastFocusedValue){addStep("fill",el,el.value);lastFocusedEl=null;lastFocusedValue="";}}
+
+function onBlur(e){if(!isRecording||isUI(e.target))return;flushInput();}
+
+function escXml(s){return(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&apos;");}
+
+function dedup(){var m={},o=[];steps.forEach(function(s){if(!m[s.xpath]){m[s.xpath]=s.objectId;o.push(s.xpath);}});return{m:m,o:o};}
+
+function genXML(){var d=dedup(),L=['<?xml version="1.0" encoding="UTF-8"?>',"<class>",'    <screen screenID="'+escXml(screenName)+'">'];
+  d.o.forEach(function(xp){L.push('        <object objectId="'+escXml(d.m[xp])+'">');L.push("            <objectProperty>xpath="+xp+"</objectProperty>");L.push("        </object>");L.push("");});
+  L.push("    </screen>","</class>");return L.join("\n");}
+
+function genGherkin(){var d=dedup(),sn=screenName,L=["Feature: Recorded Salesforce flow","","  @Recorded_Flow","  Scenario: Recorded steps on "+sn,"","    Given I have launched App"];
+  steps.forEach(function(s){var id=d.m[s.xpath];
+    switch(s.action){
+      case"click":L.push('    And I click "'+id+'" on "'+sn+'" screen','    And I wait for ".1" mins');break;
+      case"submit":L.push('    And I submit "'+id+'" on "'+sn+'" screen','    And I wait for ".2" mins');break;
+      case"hover_click":L.push('    Then I mouse hover and click on "'+id+'" on "'+sn+'" screen','    And I wait for ".2" mins');break;
+      case"fill":L.push('    And I enter "'+s.value+'" details in "'+id+'" on "'+sn+'" screen','    And I wait for ".1" mins');break;
+      case"select":L.push('    And I select "'+s.value+'" from "'+id+'" dropdown using "visibleText" selection type on "'+sn+'" screen','    And I wait for ".1" mins');break;
+      case"check":L.push('    And I click "'+id+'" on "'+sn+'" screen','    And I wait for ".1" mins');break;
+      case"key":L.push('    And I hit "'+s.value+'" key on "'+sn+'" screen','    And I wait for ".1" mins');break;
+    }});L.push("");return L.join("\n");}
+
+function genStepDefs(){var u={};steps.forEach(function(s){u[s.action]=true;});
+  var D={click:['@Then("^I click \\"(.*?)\\" on \\"(.*?)\\" screen$")','public void i_click_on_screen(String field, String screenName) {','    stepDefinitionHelperWebClassInstance.clickOnElementOnScreen(field, screenName);','}'],
+    submit:['@Then("^I submit \\"(.*?)\\" on \\"(.*?)\\" screen$")','public void i_submit_on_screen(String field, String screenName) {','    stepDefinitionHelperWebClassInstance.submitOnScreen(field, screenName);','}'],
+    hover_click:['@Then("^I mouse hover and click on \\"(.*?)\\" on \\"(.*?)\\" screen$")','public void i_mouse_hover_and_click_on_screen(String field, String screenName) {','    stepDefinitionHelperWebClassInstance.mouseHoverAndClickOnScreen(field, screenName);','}'],
+    fill:['@Then("^I enter \\"(.*?)\\" details in \\"(.*?)\\" on \\"(.*?)\\" screen$")','public void i_enter_details_in_on_screen(String value, String field, String screenName) {','    stepDefinitionHelperWebClassInstance.enterDetailsOnScreen(value, field, screenName);','}'],
+    select:['@Then("^I select \\"(.*?)\\" from \\"(.*?)\\" dropdown using \\"(.*?)\\" selection type on \\"(.*?)\\" screen$")','public void i_select_from_dropdown_using_selection_type_on_screen(String strOptionToSelect, String strDDName, String strSelectionType, String strScreenName) {','    stepDefinitionHelperWebClassInstance.selectFromDropdownUsingSelectionTypeOnScreen(strOptionToSelect, strDDName, strSelectionType, strScreenName);','}'],
+    key:['@Then("^I hit \\"(.*?)\\" key on \\"(.*?)\\" screen$")','public void i_hit_key_on_screen(String keyName, String screenName) {','    stepDefinitionHelperWebClassInstance.hitKeyOnScreen(keyName, screenName);','}']};
+  var L=["// @Then Step Definitions (StepDefinition.java)","// Add any missing ones to your class",""];
+  Object.keys(D).forEach(function(k){if(u[k]||(k==="click"&&u.check)){L.push("");D[k].forEach(function(x){L.push(x);});}});
+  L.push("",'@Then("^I wait for \\"(.*?)\\" mins$")','public void i_wait_for_mins(String mins) {','    stepDefinitionHelperWebClassInstance.waitForMins(mins);','}');
+  return L.join("\n");}
+
+function genHelpers(){var u={};steps.forEach(function(s){u[s.action]=true;});
+  var L=["// Helper Methods (StepDefinitionHelperWeb.java)","// Add any missing ones to your helper class",""];
+  if(u.click||u.check){L.push("public void clickOnElementOnScreen(String field, String screenName) {","    String[] objectPropertyArray = this.genGetLocator(field, screenName);","    String locatorValue = objectPropertyArray[1];","    WebElement element = DriverManagerThreadSafe.getDriver().findElement(By.xpath(locatorValue));","    element.click();","    Thread.sleep(1000);","}","");}
+  if(u.submit){L.push("public void submitOnScreen(String field, String screenName) {","    String[] objectPropertyArray = this.genGetLocator(field, screenName);","    String locatorValue = objectPropertyArray[1];","    WebElement element = DriverManagerThreadSafe.getDriver().findElement(By.xpath(locatorValue));","    element.click();","    Thread.sleep(2000);","}","");}
+  if(u.hover_click){L.push("public void mouseHoverAndClickOnScreen(String field, String screenName) {","    String[] objectPropertyArray = this.genGetLocator(field, screenName);","    String locatorValue = objectPropertyArray[1];","    Actions act = new Actions(DriverManagerThreadSafe.getDriver());","    WebElement element = DriverManagerThreadSafe.getDriver().findElement(By.xpath(locatorValue));","    act.moveToElement(element).click().build().perform();","    Thread.sleep(2000);","}","");}
+  if(u.fill){L.push("public void enterDetailsOnScreen(String value, String field, String screenName) {","    String[] objectPropertyArray = this.genGetLocator(field, screenName);","    String locatorValue = objectPropertyArray[1];","    String data = this.getglobalOrDatajsonData(value);","    Actions act = new Actions(DriverManagerThreadSafe.getDriver());","    WebElement element = DriverManagerThreadSafe.getDriver().findElement(By.xpath(locatorValue));","    act.doubleClick(element).doubleClick(element).sendKeys(data).sendKeys(Keys.ENTER).build().perform();","    Thread.sleep(1000);","}","");}
+  if(u.select){L.push("public void selectFromDropdownUsingSelectionTypeOnScreen(String strOptionToSelect, String strDDName, String strSelectionType, String strScreenName) {","    String[] objectPropertyArray = this.genGetLocator(strDDName, strScreenName);","    String locatorValue = objectPropertyArray[1];","    WebElement element = DriverManagerThreadSafe.getDriver().findElement(By.xpath(locatorValue));","    new Select(element).selectByVisibleText(strOptionToSelect);","    Thread.sleep(1000);","}","");}
+  if(u.key){L.push("public void hitKeyOnScreen(String keyName, String screenName) {","    WebElement activeEl = DriverManagerThreadSafe.getDriver().switchTo().activeElement();","    if (keyName.equalsIgnoreCase(\"ENTER\")) activeEl.sendKeys(Keys.ENTER);","    else if (keyName.equalsIgnoreCase(\"TAB\")) activeEl.sendKeys(Keys.TAB);","    else if (keyName.equalsIgnoreCase(\"ESCAPE\")) activeEl.sendKeys(Keys.ESCAPE);","    Thread.sleep(1000);","}","");}
+  return L.join("\n");}
+
+// Console replay script — mirrors exactly what the Java helpers do
+// (click / fill with input+change+blur / select / key). Paste in
+// Console to verify the whole flow before writing any Java.
+function genConsoleTest(){
+  var L=[];
+  L.push("(async function(){");
+  L.push("  function xp(p){return document.evaluate(p,document,null,XPathResult.FIRST_ORDERED_NODE_TYPE,null).singleNodeValue;}");
+  L.push("  function wait(ms){return new Promise(function(r){setTimeout(r,ms);});}");
+  L.push("  function hl(e){try{e.scrollIntoView({block:'center'});e.style.outline='3px solid #e53935';setTimeout(function(){e.style.outline='';},700);}catch(x){}}");
+  L.push("  function clk(p){var e=xp(p);if(!e){console.error('NOT FOUND:',p);return false;}hl(e);e.focus&&e.focus();e.click();console.log('clicked:',p);return true;}");
+  L.push("  function fill(p,v){var e=xp(p);if(!e){console.error('NOT FOUND:',p);return false;}hl(e);e.focus();e.value=v;e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));e.dispatchEvent(new Event('blur',{bubbles:true}));console.log('filled:',p,'=',v);return true;}");
+  L.push("  function sel(p,v){var e=xp(p);if(!e){console.error('NOT FOUND:',p);return false;}hl(e);if(e.tagName==='SELECT'){for(var i=0;i<e.options.length;i++){if(e.options[i].textContent.trim()===v){e.selectedIndex=i;break;}}e.dispatchEvent(new Event('change',{bubbles:true}));}else{e.click();}console.log('selected:',v,'in',p);return true;}");
+  L.push("  function key(p,k){var e=xp(p)||document.activeElement;hl(e);var kc={ENTER:13,TAB:9,ESCAPE:27}[k]||13;e.dispatchEvent(new KeyboardEvent('keydown',{key:k.charAt(0)+k.slice(1).toLowerCase(),keyCode:kc,bubbles:true}));console.log('key:',k);return true;}");
+  L.push("  console.log('--- REPLAY START ---');");
+  steps.forEach(function(s){
+    var p=JSON.stringify(s.xpath);
+    if(s.action==="click"||s.action==="submit"||s.action==="hover_click"||s.action==="check")
+      L.push("  clk("+p+"); await wait(900);");
+    else if(s.action==="fill")
+      L.push("  fill("+p+","+JSON.stringify(s.value||"")+"); await wait(900);");
+    else if(s.action==="select")
+      L.push("  sel("+p+","+JSON.stringify(s.value||"")+"); await wait(900);");
+    else if(s.action==="key")
+      L.push("  key("+p+","+JSON.stringify(s.value||"ENTER")+"); await wait(600);");
   });
-
-  box = document.createElement("div");
-  box.id = "__xf_box";
-  box.style.cssText =
-    "position:fixed;z-index:2147483647;background:#1e1e1e;color:#d4d4d4;" +
-    "padding:12px 14px;border-radius:8px;font:12px monospace;max-width:720px;" +
-    "box-shadow:0 4px 18px rgba(0,0,0,0.55);";
-  var top = e.clientY + 14, left = e.clientX + 10;
-  if (top + 320 > window.innerHeight) top = Math.max(8, e.clientY - 320);
-  if (left + 540 > window.innerWidth) left = Math.max(8, e.clientX - 540);
-  box.style.top = top + "px"; box.style.left = left + "px";
-
-  var title = document.createElement("div");
-  title.style.cssText = "font-weight:bold;margin-bottom:3px;color:#4fc3f7;";
-  title.textContent = "XPath (" + results.length + ")  <" + elTag + ">";
-  box.appendChild(title);
-
-  var info = document.createElement("div");
-  info.style.cssText = "margin-bottom:8px;font-size:11px;color:#90a4ae;";
-  info.textContent = (elTxt ? '"' + elTxt + '"' : "(no text)") + (attrInfo ? "  |  " + attrInfo : "");
-  box.appendChild(info);
-
-  results.forEach(function (item, i) {
-    var row = document.createElement("div");
-    row.style.cssText = "margin-bottom:6px;display:flex;align-items:start;gap:6px;";
-
-    var num = document.createElement("span");
-    num.style.cssText = "color:#888;min-width:14px;";
-    num.textContent = (i + 1) + ".";
-
-    var code = document.createElement("code");
-    var uniq = item.count === 1;
-    code.style.cssText = "flex:1;word-break:break-all;cursor:pointer;" +
-      (uniq ? "color:#a5d6a7;" : "color:#ef9a9a;");
-    code.textContent = item.xp;
-
-    var badge = document.createElement("span");
-    badge.style.cssText = "font-size:10px;padding:1px 6px;border-radius:3px;white-space:nowrap;" +
-      (uniq ? "background:#2e7d32;color:#fff;" : "background:#c62828;color:#fff;");
-    badge.textContent = item.count === 1 ? "unique" :
-                        item.count === 0 ? "0 hits" :
-                        item.count < 0 ? "invalid" : item.count + " hits";
-
-    // clickability indicator: does the matched element actually click?
-    var clk = document.createElement("span");
-    clk.style.cssText = "font-size:10px;padding:1px 6px;border-radius:3px;white-space:nowrap;";
-    var clickable = xpathHitsClickable(item.xp);
-    if (clickable) {
-      clk.style.background = "#1b5e20"; clk.style.color = "#fff";
-      clk.textContent = "clickable";
-    } else {
-      clk.style.background = "#6d4c00"; clk.style.color = "#ffd54f";
-      clk.textContent = "not clickable";
-    }
-
-    var copyBtn = document.createElement("button");
-    copyBtn.style.cssText = "cursor:pointer;padding:2px 8px;font-size:10px;" +
-      "background:#455a64;color:#fff;border:none;border-radius:3px;white-space:nowrap;";
-    copyBtn.textContent = "Copy";
-
-    var testBtn = document.createElement("button");
-    testBtn.style.cssText = "cursor:pointer;padding:2px 8px;font-size:10px;" +
-      "background:#1565c0;color:#fff;border:none;border-radius:3px;white-space:nowrap;";
-    testBtn.textContent = "Test";
-
-    code.onclick = function (ev) { ev.stopPropagation(); copyText(item.xp, code); };
-    copyBtn.onclick = function (ev) { ev.stopPropagation(); copyText(item.xp, copyBtn); };
-    testBtn.onclick = function (ev) {
-      ev.stopPropagation();
-      copyText(testCommandFor(item.xp), testBtn);
-    };
-
-    row.appendChild(num); row.appendChild(code);
-    row.appendChild(badge); row.appendChild(clk);
-    row.appendChild(copyBtn); row.appendChild(testBtn);
-    box.appendChild(row);
-  });
-
-  var hint = document.createElement("div");
-  hint.style.cssText = "margin-top:6px;font-size:10px;color:#777;";
-  hint.textContent = "Copy = xpath | Test = smart console cmd (type for inputs, click for buttons)";
-  box.appendChild(hint);
-
-  document.body.appendChild(box);
-  el.style.outline = "3px solid #4fc3f7";
-  setTimeout(function () { try { el.style.outline = ""; } catch (e) {} }, 1800);
+  L.push("  console.log('--- REPLAY DONE ---');");
+  L.push("})();");
+  return L.join("\n");
 }
 
-// Extract-for-AI popup: shows full report, JSON/Text toggle, auto-copy
-function showExtract(el, results, e) {
-  var x = buildExtract(el, results);
-  var textOut = extractToText(x);
-  var jsonOut = JSON.stringify(x, null, 2);
-  var compactOut = extractToCompact(x);
-  function pick(fmt) { return fmt === "json" ? jsonOut : fmt === "text" ? textOut : compactOut; }
-  if (extractFmt !== "text" && extractFmt !== "json") extractFmt = "compact";
-  var current = pick(extractFmt);
+function escH(s){var d=document.createElement("div");d.textContent=s;return d.innerHTML;}
+function cpTxt(t){if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(function(){alert("Copied!");});}else{var a=document.createElement("textarea");a.value=t;document.body.appendChild(a);a.select();document.execCommand("copy");document.body.removeChild(a);alert("Copied!");}}
 
-  box = document.createElement("div");
-  box.id = "__xf_box";
-  box.style.cssText =
-    "position:fixed;z-index:2147483647;background:#1e1e1e;color:#d4d4d4;" +
-    "padding:12px 14px;border-radius:8px;font:12px monospace;width:680px;" +
-    "max-width:92vw;box-shadow:0 4px 18px rgba(0,0,0,0.55);";
-  var top = e.clientY + 14, left = e.clientX + 10;
-  if (top + 420 > window.innerHeight) top = Math.max(8, window.innerHeight - 430);
-  if (left + 700 > window.innerWidth) left = Math.max(8, window.innerWidth - 700);
-  box.style.top = top + "px"; box.style.left = left + "px";
+function showOut(){
+  var xml=genXML(),ghk=genGherkin(),sd=genStepDefs(),hm=genHelpers(),ct=genConsoleTest();
+  var ps="background:#2d2d2d;padding:10px;overflow:auto;white-space:pre-wrap;max-height:200px;border-radius:4px;",
+      bs="cursor:pointer;padding:3px 10px;font-size:11px;background:#455a64;color:#fff;border:none;border-radius:3px;margin-left:8px;";
+  var h='<div id="'+OID+'" style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#1e1e1e;color:#d4d4d4;padding:20px;border-radius:8px;width:88%;max-width:950px;max-height:92%;overflow:auto;z-index:999999;font-family:monospace;font-size:12px;box-shadow:0 4px 20px rgba(0,0,0,0.5);">';
+  h+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;"><strong style="font-size:14px;">'+steps.length+" steps | "+screenName+'</strong><button id="xr-close" style="cursor:pointer;padding:4px 12px;">Close</button></div>';
+  h+='<p><b>1. XML (BBCRM.xml)</b><button class="xr-cp" data-t="xml" style="'+bs+'">Copy</button></p><pre style="'+ps+'">'+escH(xml)+"</pre>";
+  h+='<p><b>2. Gherkin (.feature)</b><button class="xr-cp" data-t="ghk" style="'+bs+'">Copy</button></p><pre style="'+ps+'">'+escH(ghk)+"</pre>";
+  h+='<p><b>3. @Then (StepDefinition.java)</b><button class="xr-cp" data-t="sd" style="'+bs+'">Copy</button></p><pre style="'+ps+'">'+escH(sd)+"</pre>";
+  h+='<p><b>4. Helpers (StepDefinitionHelperWeb.java)</b><button class="xr-cp" data-t="hm" style="'+bs+'">Copy</button></p><pre style="'+ps+'">'+escH(hm)+"</pre>";
+  h+='<p><b>5. Console Test (paste in Console to replay & verify)</b><button class="xr-cp" data-t="ct" style="'+bs+'background:#1565c0;">Copy</button></p><pre style="'+ps+'">'+escH(ct)+"</pre>";
+  h+='</div><div id="'+BID+'" style="position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:999998;"></div>';
+  document.body.insertAdjacentHTML("beforeend",h);
+  var cm={xml:xml,ghk:ghk,sd:sd,hm:hm,ct:ct};
+  document.querySelectorAll(".xr-cp").forEach(function(b){b.onclick=function(e){e.stopPropagation();cpTxt(cm[b.getAttribute("data-t")]);};});
+  document.getElementById("xr-close").onclick=closeOut;document.getElementById(BID).onclick=closeOut;}
 
-  var head = document.createElement("div");
-  head.style.cssText = "display:flex;align-items:center;gap:8px;margin-bottom:8px;";
-  var title = document.createElement("strong");
-  title.style.cssText = "color:#ffb74d;flex:1;";
-  title.textContent = "Extract for AI — <" + x.tag + "> (" + x.kind + ")";
-  head.appendChild(title);
+function closeOut(){var o=document.getElementById(OID),b=document.getElementById(BID);if(o)o.remove();if(b)b.remove();}
 
-  function mkBtn(label, bg) {
-    var b = document.createElement("button");
-    b.textContent = label;
-    b.style.cssText = "cursor:pointer;padding:3px 10px;font-size:11px;color:#fff;" +
-      "border:none;border-radius:3px;background:" + bg + ";";
-    return b;
-  }
+function attachListeners(){
+  document.addEventListener("click",onClick,true);document.addEventListener("keydown",onKey,true);
+  document.addEventListener("focusin",onFocus,true);document.addEventListener("change",onChange,true);
+  document.addEventListener("blur",onBlur,true);}
 
-  var pre = document.createElement("pre");
-  pre.style.cssText = "background:#2d2d2d;padding:10px;overflow:auto;" +
-    "white-space:pre-wrap;max-height:340px;border-radius:4px;margin:0;";
-  pre.textContent = current;
+function setRecUI(){
+  document.getElementById("xr-st").textContent="REC";document.getElementById("xr-st").style.background="#d32f2f";
+  document.getElementById("xr-go").disabled=true;document.getElementById("xr-sp").disabled=false;document.getElementById("xr-un").disabled=false;
+  var ni=document.getElementById("xr-scr");if(ni)ni.value=screenName;
+  updateCount();}
 
-  var compactBtn = mkBtn("Compact", extractFmt === "compact" ? "#4caf50" : "#455a64");
-  var textBtn = mkBtn("Text", extractFmt === "text" ? "#4caf50" : "#455a64");
-  var jsonBtn = mkBtn("JSON", extractFmt === "json" ? "#4caf50" : "#455a64");
-  var copyBtn = mkBtn("Copy", "#1565c0");
+function startRec(){
+  if(isRecording)return;var ni=document.getElementById("xr-scr");
+  if(ni&&ni.value.trim())screenName=ni.value.trim();
+  steps=[];stepIndex=0;usedObjIds={};lastFocusedEl=null;lastFocusedValue="";isRecording=true;
+  attachListeners();setRecUI();saveState();}
 
-  function setFmt(fmt) {
-    extractFmt = fmt;
-    pre.textContent = pick(fmt);
-    compactBtn.style.background = fmt === "compact" ? "#4caf50" : "#455a64";
-    textBtn.style.background = fmt === "text" ? "#4caf50" : "#455a64";
-    jsonBtn.style.background = fmt === "json" ? "#4caf50" : "#455a64";
-  }
-  compactBtn.onclick = function (ev) { ev.stopPropagation(); setFmt("compact"); };
-  textBtn.onclick = function (ev) { ev.stopPropagation(); setFmt("text"); };
-  jsonBtn.onclick = function (ev) { ev.stopPropagation(); setFmt("json"); };
-  copyBtn.onclick = function (ev) { ev.stopPropagation(); copyText(pick(extractFmt), copyBtn); };
+function detachListeners(){
+  document.removeEventListener("click",onClick,true);document.removeEventListener("keydown",onKey,true);
+  document.removeEventListener("focusin",onFocus,true);document.removeEventListener("change",onChange,true);
+  document.removeEventListener("blur",onBlur,true);}
 
-  head.appendChild(compactBtn); head.appendChild(textBtn);
-  head.appendChild(jsonBtn); head.appendChild(copyBtn);
-  box.appendChild(head);
-  box.appendChild(pre);
+function stopRec(){
+  if(!isRecording)return;flushInput();isRecording=false;
+  detachListeners();clearState();
+  document.getElementById("xr-st").textContent="Stopped";document.getElementById("xr-st").style.background="#388e3c";
+  document.getElementById("xr-go").disabled=false;document.getElementById("xr-sp").disabled=true;document.getElementById("xr-un").disabled=true;
+  if(steps.length>0)showOut();else alert("No steps recorded.");}
 
-  var hint = document.createElement("div");
-  hint.style.cssText = "margin-top:6px;font-size:10px;color:#777;";
-  hint.textContent = "Auto-copied. Compact = small AI window (self-contained). Text/JSON = full detail.";
-  box.appendChild(hint);
+var bS="cursor:pointer;padding:6px 14px;color:#fff;border:none;border-radius:4px;font-size:12px;font-weight:600;";
+var ph='<div id="'+PID+'" style="position:fixed;top:12px;right:12px;background:#263238;color:#eceff1;padding:14px 16px;border-radius:10px;font-family:sans-serif;font-size:13px;z-index:999997;box-shadow:0 2px 12px rgba(0,0,0,0.4);cursor:move;min-width:175px;">'+
+  '<div style="font-weight:bold;margin-bottom:6px;font-size:14px;">XPath Recorder v4</div>'+
+  '<span id="xr-st" style="display:inline-block;padding:2px 10px;border-radius:4px;background:#555;font-size:11px;letter-spacing:1px;">Stopped</span>'+
+  '<div id="xr-cnt" style="margin:6px 0;font-size:12px;">Steps: 0</div>'+
+  '<div style="margin-bottom:10px;"><label style="font-size:11px;opacity:0.7;">Screen ID</label><br>'+
+  '<input id="xr-scr" type="text" value="RecordedScreen" style="width:150px;padding:4px 8px;font-size:12px;border-radius:4px;border:1px solid #546e7a;background:#37474f;color:#eceff1;margin-top:2px;"></div>'+
+  '<button id="xr-go" style="'+bS+'background:#4caf50;margin-right:4px;">Start</button>'+
+  '<button id="xr-sp" style="'+bS+'background:#f44336;margin-right:4px;" disabled>Stop</button>'+
+  '<button id="xr-un" style="'+bS+'background:#ff9800;font-size:11px;padding:6px 8px;" disabled title="Undo last step">Undo</button>'+
+  "</div>";
+document.body.insertAdjacentHTML("beforeend",ph);
+document.getElementById("xr-go").onclick=startRec;
+document.getElementById("xr-sp").onclick=stopRec;
+document.getElementById("xr-un").onclick=function(e){e.stopPropagation();undoStep();};
 
-  document.body.appendChild(box);
-  el.style.outline = "3px solid #ffb74d";
-  setTimeout(function () { try { el.style.outline = ""; } catch (e) {} }, 1800);
+var panel=document.getElementById(PID),drag=false,dx=0,dy=0;
+panel.addEventListener("mousedown",function(e){if(e.target.tagName==="BUTTON"||e.target.tagName==="INPUT")return;drag=true;dx=e.clientX-panel.getBoundingClientRect().left;dy=e.clientY-panel.getBoundingClientRect().top;});
+document.addEventListener("mousemove",function(e){if(!drag)return;panel.style.left=(e.clientX-dx)+"px";panel.style.top=(e.clientY-dy)+"px";panel.style.right="auto";});
+document.addEventListener("mouseup",function(){drag=false;});
 
-  // auto-copy current view
-  copyText(current, null);
+window.__xpathRecorderActive=true;
+
+var wasRecording=loadState();
+if(wasRecording){
+  isRecording=true;attachListeners();setRecUI();
+  console.log("[Rec] Resumed recording after navigation. "+steps.length+" steps so far. Screen: "+screenName);
+}else{
+  console.log("XPath Recorder v4 loaded. Set Screen ID -> Start -> interact -> Stop.");
 }
-
-function hide() {
-  if (box && box.parentNode) box.parentNode.removeChild(box);
-  box = null;
-}
-
-// ====================== toggle + init ======================
-
-var EVENTS = ["mousedown", "pointerdown", "mouseup", "pointerup",
-              "dblclick", "contextmenu", "focusout", "blur"];
-
-function toggle() {
-  on = !on;
-  var btn = document.getElementById("__xf_toggle");
-  if (on) {
-    EVENTS.forEach(function (ev) { document.addEventListener(ev, blocker, true); });
-    document.addEventListener("click", clickHandler, true);
-    document.addEventListener("mouseover", onHover, true);
-    document.addEventListener("pointermove", onHover, true);
-    btn.textContent = "XPath: ON (\u2318\u21E7X)";
-    btn.style.background = "#4caf50";
-  } else {
-    EVENTS.forEach(function (ev) { document.removeEventListener(ev, blocker, true); });
-    document.removeEventListener("click", clickHandler, true);
-    document.removeEventListener("mouseover", onHover, true);
-    document.removeEventListener("pointermove", onHover, true);
-    hide(); clearHover();
-    btn.textContent = "XPath: OFF (\u2318\u21E7X)";
-    btn.style.background = "#f44336";
-  }
-}
-
-var btn = document.createElement("button");
-btn.id = "__xf_toggle";
-btn.textContent = "XPath: OFF (\u2318\u21E7X)";
-btn.style.cssText =
-  "position:fixed;bottom:12px;right:12px;z-index:2147483647;padding:8px 16px;" +
-  "font:13px sans-serif;font-weight:bold;color:#fff;background:#f44336;" +
-  "border:none;border-radius:8px;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,0.3);";
-btn.onclick = toggle;
-document.body.appendChild(btn);
-
-// Mode switch: Quick XPath  <->  Extract for AI
-var modeBtn = document.createElement("button");
-modeBtn.id = "__xf_mode";
-modeBtn.textContent = "Mode: Quick XPath";
-modeBtn.style.cssText =
-  "position:fixed;bottom:52px;right:12px;z-index:2147483647;padding:6px 14px;" +
-  "font:12px sans-serif;font-weight:bold;color:#fff;background:#455a64;" +
-  "border:none;border-radius:8px;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,0.3);";
-modeBtn.onclick = function (e) {
-  e.stopPropagation();
-  mode = (mode === "quick") ? "extract" : "quick";
-  modeBtn.textContent = (mode === "quick") ? "Mode: Quick XPath" : "Mode: Extract for AI";
-  modeBtn.style.background = (mode === "quick") ? "#455a64" : "#ef6c00";
-  hide();
-};
-document.body.appendChild(modeBtn);
-
-// Toggle shortcut. We listen on BOTH keydown and keyup because when a Lightning
-// dropdown/listbox is open, Salesforce traps keydown (stopImmediatePropagation)
-// and our keydown handler never fires — keyup is not trapped, so it still works.
-// A debounce makes a single key press toggle exactly once.
-var __xfLastToggle = 0;
-function shortcut(e) {
-  var isCombo = (e.code === "KeyX" || (e.key && e.key.toLowerCase() === "x")) &&
-                (e.metaKey || e.ctrlKey) && e.shiftKey;
-  if (!isCombo) return;
-  var now = Date.now();
-  if (now - __xfLastToggle < 400) return;   // ignore the paired keydown/keyup
-  __xfLastToggle = now;
-  e.preventDefault();
-  e.stopPropagation();
-  toggle();
-}
-window.addEventListener("keydown", shortcut, true);
-window.addEventListener("keyup", shortcut, true);
-document.addEventListener("keyup", shortcut, true);
-
-console.log("XPath Finder v10 loaded. Toggle: Cmd/Ctrl+Shift+X (works while a dropdown is open) or click the button.");
 })();
