@@ -1,56 +1,37 @@
 (function () {
-  var col = "Opportunity Name";   // <-- EDIT: the column header text
-  var row = 1;
+  var colName = "Opportunity Name";
 
-  function xp1(p){return document.evaluate(p,document,null,XPathResult.FIRST_ORDERED_NODE_TYPE,null).singleNodeValue;}
-  function xpN(p){var s=document.evaluate(p,document,null,XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,null);var a=[];for(var i=0;i<s.snapshotLength;i++)a.push(s.snapshotItem(i));return a;}
+  function txt(e){ return (e.textContent||"").replace(/\s+/g,' ').trim(); }
+  function attrDump(e){ var o={}; if(e&&e.attributes) for(var i=0;i<e.attributes.length;i++){var a=e.attributes[i]; if(/^(class|role|scope|data-|aria-label|aria-colindex)/.test(a.name)) o[a.name]=(a.value||'').substring(0,50);} return o; }
 
-  // 1. all distinct data-labels on the page
-  var labels=[...new Set([...document.querySelectorAll('[data-label]')].map(function(e){return e.getAttribute('data-label');}))];
-  console.log("ALL data-labels:", labels);
+  var table = document.querySelector("table[role='grid'],[role='treegrid'],table.slds-table,[role='grid'],table");
+  console.log("TABLE:", table?table.tagName.toLowerCase():"NONE", table?("| class="+(table.className||'').substring(0,70)):"");
+  if(!table){ console.warn("No table/grid found"); return; }
 
-  // 2. match exactly, else case/space-insensitive
-  var use = labels.find(function(l){return l===col;}) ||
-            labels.find(function(l){return l && l.trim().toLowerCase()===col.trim().toLowerCase();});
-  console.log("USING data-label:", JSON.stringify(use));
-  if(!use){ console.warn("No matching column — copy the exact one from ALL data-labels above into col."); return; }
+  // headers
+  var heads = table.querySelectorAll("thead th, tr:first-child th, [role='columnheader']");
+  console.log("HEADERS:", [...heads].map(function(h,i){return i+":'"+txt(h).replace(/^Sort by:?/i,'').substring(0,30)+"'";}));
 
-  // 3. inspect the first cell of that column
-  var cell = xpN("//*[@data-label='"+use+"']")[0];
-  if(cell){
-    var link = cell.querySelector("a, records-hoverable-link, lightning-formatted-url, button, [role='button']");
-    console.log("LINK element inside cell:", link?link.tagName.toLowerCase():"NONE FOUND");
-    console.log("CELL HTML:", cell.outerHTML.replace(/\s+/g,' ').substring(0,300));
-  } else { console.log("No cell matched that data-label."); }
+  // column index for our column
+  var idx = -1;
+  [...heads].forEach(function(h,i){ if(txt(h).replace(/^Sort by:?/i,'').trim().toLowerCase()===colName.toLowerCase()) idx=i; });
+  console.log("COLUMN INDEX (0-based):", idx);
+  if(idx<0){ console.warn("Not found — copy exact text from HEADERS."); return; }
 
-  // 4. build + test the row XPath
-  var xpath = "(//*[(self::td or self::th) and @data-label='"+use+"']//*[self::a or self::records-hoverable-link or self::lightning-formatted-url])["+row+"]";
-  var el = xp1(xpath);
-  console.log("XPATH:", xpath);
-  console.log("ROW "+row+" found:", !!el, el?("-> "+el.textContent.trim()):"");
-})();
+  console.log("HEADER["+idx+"] attrs:", attrDump(heads[idx]));
 
-
-
-
-
-
-
-
-
-
-
-
-
-(function () {
-  var labels=[...new Set([...document.querySelectorAll('[data-label]')].map(e=>e.getAttribute('data-label')))];
-  console.log("ALL data-labels:", labels);
-  var cell = document.evaluate("//*[@data-label='Opportunity Name']", document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-  if (cell) {
-    var link = cell.querySelector("a, records-hoverable-link, lightning-formatted-url, button, [role='button']");
-    console.log("LINK tag:", link ? link.tagName.toLowerCase() : "NONE");
-    console.log("CELL HTML:", cell.outerHTML.replace(/\s+/g,' ').substring(0,300));
-  } else {
-    console.log("No cell with data-label='Opportunity Name' — pick the exact one from ALL data-labels above.");
+  // first data row + the cell at that index
+  var rows = table.querySelectorAll("tbody tr, [role='row']");
+  var dataRow=null;
+  for(var i=0;i<rows.length;i++){ if(rows[i].querySelector("td,[role='gridcell']")){ dataRow=rows[i]; break; } }
+  if(dataRow){
+    var cells = dataRow.querySelectorAll("th,td,[role='gridcell'],[role='rowheader']");
+    var cell = cells[idx];
+    console.log("CELL["+idx+"] tag:", cell?cell.tagName.toLowerCase():"NONE", "| attrs:", cell?attrDump(cell):"");
+    if(cell){
+      var link = cell.querySelector("a, records-hoverable-link, lightning-formatted-url, button, [role='button']");
+      console.log("LINK tag:", link?link.tagName.toLowerCase():"NONE", "| LINK attrs:", link?attrDump(link):"");
+      console.log("CELL HTML:", cell.outerHTML.replace(/\s+/g,' ').substring(0,350));
+    }
   }
 })();
