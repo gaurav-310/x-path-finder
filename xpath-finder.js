@@ -478,6 +478,34 @@ function gen(rawEl) {
   if (t === "input" || t === "textarea" || t === "select") {
     var lblTxt = findLabel(el);
 
+    // 0. FIELD/GROUP label — for compound fields (date+time) the inner label is
+    //    generic ("Date"/"Time"); the real field label comes from the group
+    //    wrapper's legend or from the field name (Preferred_Contact_Date__c ->
+    //    "Preferred Contact Date"). Anchor to that so it's unique.
+    var grpLblTxt = "";
+    var grpWrap = closestAcrossShadow(el,
+      "flowruntime-record-field,lightning-record-field,lightning-input-field,fieldset,[role='group']");
+    if (grpWrap) {
+      var leg = grpWrap.querySelector("legend,.slds-form-element__legend");
+      if (leg) { var lt = (leg.textContent || "").replace(/\s+/g, " ").trim();
+        if (lt && lt.length < 60 && lt.toLowerCase() !== (lblTxt || "").toLowerCase()) grpLblTxt = lt; }
+    }
+    if (!grpLblTxt) {
+      var nmRaw = el.getAttribute && el.getAttribute("name");
+      if (nmRaw && !/^[a-z0-9]{12,}$/i.test(nmRaw)) {
+        var human = nmRaw.replace(/__c$/i, "").replace(/[_]+/g, " ").replace(/\s+/g, " ").trim();
+        if (human && human.length < 60 && human.toLowerCase() !== (lblTxt || "").toLowerCase() &&
+            /[A-Za-z]/.test(human) && human.indexOf(" ") > -1) grpLblTxt = human;
+      }
+    }
+    if (grpLblTxt) {
+      // anchor to the field label, then the input (and the sub-label for compound)
+      r.push("//*[normalize-space()=" + wq(grpLblTxt) + "]/following::" + t + "[1]");
+      if (lblTxt && lblTxt.length < 40 && !looksDynamic(lblTxt))
+        r.push("//*[normalize-space()=" + wq(grpLblTxt) +
+               "]/following::label[normalize-space()=" + wq(lblTxt) + "]/following::" + t + "[1]");
+    }
+
     // 1. Lightning record-form field: lightning-input-field[field-name]
     var fieldWrap = el.closest("[field-name],[data-field]");
     if (fieldWrap) {
@@ -1371,6 +1399,37 @@ function collectDropdownOptions(el) {
 }
 
 // Build a structured object holding everything the AI needs
+// How many shadow boundaries between el and document (0 = light DOM).
+function shadowDepthOf(el) {
+  var d = 0, cur = el;
+  while (cur) {
+    var root = cur.getRootNode && cur.getRootNode();
+    if (root && root !== document && root.host) { d++; cur = root.host; } else break;
+  }
+  return d;
+}
+// Chain of shadow host tags from document down to el.
+function shadowPathOf(el) {
+  var hosts = [], cur = el, guard = 0;
+  while (cur && guard++ < 20) {
+    var root = cur.getRootNode && cur.getRootNode();
+    if (root && root !== document && root.host) { hosts.unshift(tagOf(root.host)); cur = root.host; } else break;
+  }
+  return hosts;
+}
+// Text content across shadow roots, skipping action links/buttons.
+function deepTextOf(node) {
+  var t = "";
+  (function w(n) {
+    if (n.nodeType === 3) { t += n.textContent; return; }
+    if (n.nodeType === 1) { var g = tagOf(n);
+      if (g === "a" || g === "button" || (n.getAttribute && n.getAttribute("role") === "button")) return; }
+    if (n.shadowRoot) w(n.shadowRoot);
+    var c = n.childNodes || []; for (var i = 0; i < c.length; i++) w(c[i]);
+  })(node);
+  return t.replace(/\s+/g, " ").trim();
+}
+
 function buildExtract(el, candidates) {
   var t = tagOf(el);
   var kind = detectKind(el);
@@ -1452,10 +1511,22 @@ function buildExtract(el, candidates) {
   var dropdownOptions = (kindForOpts === "dropdown-option" || kindForOpts === "dropdown-trigger")
     ? collectDropdownOptions(el) : null;
 
+  var objId = objectIdFor(el);
+  // reachability: does the BEST xpath actually resolve via document.evaluate?
+  // (NO => element is in native shadow; By.xpath/$x can't reach it.)
+  var anyReachable = candidates.some(function (c) { return c.count >= 1; });
+  var bestReachable = bestPick ? (countMatches(bestPick) >= 1) : false;
   return {
     url: pageUrl,
     targetDescription: describeShort(el),
     bestXPath: bestPick,
+    objectId: objId,
+    objectXml: objectXmlFor(objId, bestPick),
+    actionWord: actionWordFor(kind),
+    reachable: bestReachable || anyReachable,
+    shadowDepth: shadowDepthOf(el),
+    shadowPath: shadowPathOf(el),
+    deepValue: deepTextOf(el).substring(0, 80),
     dropdownOptions: dropdownOptions,
     tag: t,
     kind: kind,
@@ -1477,6 +1548,21 @@ function buildExtract(el, candidates) {
     dynamicValues: dynamicValues,
     html: html
   };
+}
+
+// Map a kind to the action verb used in the team's Gherkin.
+function actionWordFor(kind) {
+  switch (kind) {
+    case "text-input":
+    case "textarea":
+    case "contenteditable": return "enter";
+    case "select":
+    case "dropdown-trigger":
+    case "dropdown-option": return "select";
+    case "checkbox":
+    case "radio":           return "check";
+    default:                return "click";
+  }
 }
 
 // Human-readable version of the extract
@@ -1569,15 +1655,44 @@ function extractToCompact(x) {
   if (x.modal) L.push("MODAL: inside popup; title=" + JSON.stringify(x.modal.title) + " (scope the xpath to this dialog)");
   if (x.table) L.push("TABLE: col=" + x.table.colIndex + " header=" + JSON.stringify(x.table.header));
   L.push("BEST (validated unique+clickable): " + x.bestXPath);
+  L.push("REACHABLE_BY_XPATH: " + (x.reachable ? "yes" :
+         "NO — native shadow; By.xpath/$x cannot reach it, use a JS deep-shadow walk"));
+  if (x.shadowDepth) L.push("SHADOW_DEPTH: " + x.shadowDepth + "  PATH: " + x.shadowPath.join(" >> "));
+  if (x.deepValue && x.deepValue !== x.fullText) L.push("DEEP_TEXT: " + JSON.stringify(x.deepValue));
+  L.push("ACTION: " + x.actionWord + "  (KIND=" + x.kind + ")  |  Java: " + x.interaction.java);
+  L.push("OBJECT_ID: " + x.objectId);
+  L.push("OBJECT_MAP:");
+  L.push(x.objectXml);
   L.push("CANDIDATES [matchCount]:");
-  x.candidates.slice(0, 4).forEach(function (c) { L.push("  [" + c.count + "] " + c.xpath); });
+  x.candidates.slice(0, 5).forEach(function (c) { L.push("  [" + c.count + "] " + c.xpath); });
   if (x.dynamicValues.length) L.push("AVOID (dynamic): " + JSON.stringify(x.dynamicValues));
   if (x.dropdownOptions && x.dropdownOptions.length) {
     L.push("OPTIONS: " + x.dropdownOptions.map(function (o) {
       return "#" + o.index + "=" + JSON.stringify(o.text);
     }).join(" "));
   }
-  L.push("RULES: keep BEST unless its count!=1 or it uses an AVOID value; never anchor a form field to a heading; return xpath + 1-line Java for KIND='" + x.kind + "'.");
+
+  // ---- explicit task for the agent (what to produce) ----
+  L.push("");
+  L.push("=== TASK FOR THE AGENT ===");
+  L.push("I am performing a '" + x.actionWord + "' on THIS element (KIND=" + x.kind +
+         "). For my Cucumber + Selenium framework, give me:");
+  L.push("1) OBJECT-MAP entry: use the <object> block above (rename objectId if you have a better name).");
+  L.push("2) GHERKIN step for the '" + x.actionWord + "' action, e.g.:  And I " + x.actionWord +
+         " \"" + x.objectId + "\" on \"<ScreenName>\" screen");
+  L.push("3) The @Then step definition + helper method (only if it doesn't already exist).");
+  if (x.isInput || /select|combobox|checkbox|radio/.test(x.kind)) {
+    L.push("4) The VALUE to " + x.actionWord + " (from my test data) and how it is applied.");
+  } else {
+    L.push("4) If I later VERIFY this, a value-included verification XPath + a presence/text verify step.");
+  }
+  if (!x.reachable) {
+    L.push("NOTE: REACHABLE_BY_XPATH=NO -> do NOT use By.xpath. Use a JavascriptExecutor that walks the " +
+           "shadowRoot chain (see SHADOW PATH), anchored on the field-label/attrs, and reads/clicks via a deep walk.");
+  }
+  L.push("RULES: use BEST unless count!=1 or it uses an AVOID value; never anchor a form field to a heading; " +
+         "shadow-DOM aware; return XPath + 1-line Selenium Java for KIND='" + x.kind + "'.");
+  L.push("=== END ===");
   return L.join("\n");
 }
 
