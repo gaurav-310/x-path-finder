@@ -783,8 +783,10 @@ function appendNeighborXPaths(el, t, txt, r) {
 // otherwise falls back to the clicked element's own tag.
 function cellLinkTag(cellEl, clickedTag) {
   if (/-link$/.test(clickedTag) || clickedTag === "a") return clickedTag;
+  // Prefer a custom link element; else ANY anchor (list-view links often have no
+  // href / use lstOutputLookup), else a role=link.
   var custom = cellEl.querySelector(
-    "records-hoverable-link,lightning-formatted-url,a[href],[role='link']"
+    "records-hoverable-link,lightning-formatted-url,a[href],a,[role='link']"
   );
   if (custom) {
     var ct = tagOf(custom);
